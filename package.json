@@ -1,0 +1,12 @@
+{
+  "name": "cookcircle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CookCircle web app and SQLite-backed Node.js API",
+  "engines": {
+    "node": ">=22.5.0 <27.0.0"
+  },
+  "scripts": {
+    "start": "node cookcircle-server.js"
+  }
+}

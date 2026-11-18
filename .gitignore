@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.cookcircle-*.dpapi
+cookcircle.sqlite
+cookcircle.sqlite-*
+cookcircle-data.json
+*.log
