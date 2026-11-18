@@ -5,7 +5,17 @@ Files
 -----
 * cookcircle-landing.html — the full browser page; HTML, CSS and JavaScript are together in this file
 * cookcircle-server.js — Node.js server, API, role access and database setup
-* cookcircle.sqlite — created automatically on first launch
+* cookcircle.sqlite — created automatically on first local launch
+* cookcircle-postgres-schema.sql and cookcircle-postgres-*.js — hosted PostgreSQL support
+* migrate-cookcircle-to-supabase.cmd — guided, one-time copy from local SQLite to Supabase
+* verify-cookcircle-supabase.cmd — read-only check if the migration window closed
+
+For hosting and the safe SQLite-to-Supabase migration steps, read
+`HOSTING-RENDER.md`. The migration asks for the private database connection
+string at a hidden prompt; database passwords and encryption keys are not
+stored in the project source. The Supabase public CA certificate must be saved
+as `supabase-ca.crt` beside the server and included when publishing the hosted
+backend.
 
 Start the website
 -----------------

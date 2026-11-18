@@ -1,4 +1,4 @@
-// CookCircle MVP backend — Node.js built-ins only (Node 22.5+ with node:sqlite).
+// CookCircle MVP backend — SQLite locally, optional PostgreSQL using DATABASE_URL.
 // Run with: node cookcircle-server.js
 // Persistent local SQLite database: cookcircle.sqlite
 const http = require('node:http');
@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const USE_POSTGRES = Boolean(process.env.DATABASE_URL);
+const { PostgresSyncDatabase } = USE_POSTGRES ? require('./cookcircle-postgres-sync') : {};
 const tls = require('node:tls');
 const readline = require('node:readline');
 
@@ -14,7 +16,7 @@ const WEB_ROOT = __dirname;
 const DB_FILE = process.env.COOKCIRCLE_DB_FILE
   ? path.resolve(process.env.COOKCIRCLE_DB_FILE)
   : path.join(__dirname, 'cookcircle.sqlite');
-fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+if (!USE_POSTGRES) fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 const sessions = new Map();
 const challenges = new Map();
 const signupVerificationChallenges = new Map();
@@ -30,7 +32,7 @@ const seed = {
   ], users: [], bookings: []
 };
 
-const sql = new DatabaseSync(DB_FILE);
+const sql = USE_POSTGRES ? new PostgresSyncDatabase(process.env.DATABASE_URL) : new DatabaseSync(DB_FILE);
 sql.exec(`
   PRAGMA foreign_keys = ON;
   PRAGMA journal_mode = WAL;
@@ -167,6 +169,7 @@ sql.exec(`
 
 // Allow mobile-only accounts and cook applicants without residential societies.
 // Older databases had NOT NULL email/society columns and no indexed phone identifier.
+if (!USE_POSTGRES) {
 const userColumns = sql.prepare('PRAGMA table_info(users)').all();
 const emailColumn=userColumns.find(column=>column.name==='email');
 const societyColumn=userColumns.find(column=>column.name==='society_id');
@@ -194,7 +197,13 @@ if((emailColumn&&emailColumn.notnull)||(societyColumn&&societyColumn.notnull)||!
   if(sql.prepare('PRAGMA foreign_key_check').all().length)throw new Error('CookCircle database migration left invalid references.');
 }
 
+}
+
 function ensureColumn(table, column, declaration) {
+  if (USE_POSTGRES) {
+    sql.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${declaration}`);
+    return;
+  }
   const present = sql.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column);
   if (!present) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
 }
@@ -232,8 +241,10 @@ const cookInsert = sql.prepare('INSERT OR IGNORE INTO cook_profiles(id,name,veri
 [['demo-meera','Meera','approved','["North Indian"]'],['demo-rafiq','Rafiq','approved','["Home-style"]'],['demo-anjali','Anjali','approved','["South Indian"]']].forEach(c => cookInsert.run(...c));
 const serviceInsert = sql.prepare('INSERT OR IGNORE INTO service_categories(id,name,duration_minutes,base_price_paise) VALUES(?,?,?,?)');
 [['breakfast','Breakfast',120,79900],['lunch','Lunch',120,79900],['dinner','Dinner',120,79900],['special','Special occasion',180,129900]].forEach(c => serviceInsert.run(...c));
-sql.exec(`INSERT OR IGNORE INTO households(id,user_id,society_id,apartment,updated_at)
-  SELECT lower(hex(randomblob(16))),id,society_id,apartment,created_at FROM users WHERE role='customer'`);
+const addMissingHousehold = sql.prepare('INSERT OR IGNORE INTO households(id,user_id,society_id,apartment,updated_at) VALUES(?,?,?,?,?)');
+for (const u of sql.prepare("SELECT id,society_id,apartment,created_at FROM users WHERE role='customer' AND society_id IS NOT NULL").all()) {
+  addMissingHousehold.run(crypto.randomUUID(), u.id, u.society_id, u.apartment, u.created_at);
+}
 
 // One-time import from the earlier JSON prototype, if it exists.
 const legacyFile = path.join(__dirname, 'cookcircle-data.json');
@@ -441,7 +452,7 @@ function verifyPassword(password, user) {
   return crypto.timingSafeEqual(candidate, Buffer.from(user.passwordHash, 'hex'));
 }
 function normalizeSignupPhone(value){return String(value||'').replace(/[\s().-]/g,'')}
-function phoneLookupHash(value){const key=documentKey();if(!key)throw Object.assign(new Error('Phone sign-in needs the CookCircle document key. Start the server with start-cookcircle.cmd.'),{httpStatus:503});return crypto.createHmac('sha256',key).update(normalizeSignupPhone(value)).digest('hex')}
+function phoneLookupHash(value){const keyValue=process.env.COOKCIRCLE_PHONE_HASH_KEY||process.env.COOKCIRCLE_DOCUMENT_KEY||'';const key=/^[a-f0-9]{64}$/i.test(keyValue)?Buffer.from(keyValue,'hex'):null;if(!key)throw Object.assign(new Error('Phone sign-in needs COOKCIRCLE_PHONE_HASH_KEY.'),{httpStatus:503});return crypto.createHmac('sha256',key).update(normalizeSignupPhone(value)).digest('hex')}
 function maskVerificationDestination(channel,destination){if(channel==='email'){const [name,domain]=destination.split('@');return (name.slice(0,1)||'')+'••••@'+domain}return '••••'+destination.slice(-4)}
 async function sendGmailVerificationEmail(destination,code){
   const sender=String(process.env.GMAIL_SMTP_USER||'').trim().toLowerCase(),appPassword=String(process.env.GMAIL_SMTP_APP_PASSWORD||'').replace(/\s/g,'');
@@ -523,7 +534,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/admin-legumes-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'admin-legumes-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/household-dried-fruit-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'household-dried-fruit-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/cook-workspace-vegetables-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'cook-workspace-vegetables-background.jpg'));
-  if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, service: 'CookCircle MVP API', build: 'sqlite-dynamic-stakeholders-v1', database: { engine: 'SQLite', connected: sql.prepare('SELECT 1 AS ok').get().ok === 1, persistent: true, file: path.basename(DB_FILE) }, features: { dynamicPersistentDatabase: true, bookingCheckinCodeInHouseholdBookings: true, publicHelpRequests: true, resolvedHelpRequestClear: true, emailMobileSignupVerification: true, cookSignupWithoutResidence: true, cookDefaultAvatars: true, profilePhotoCrop: true, alphanumericCaptcha: true, caseSensitiveMixedCaptcha: true, dietPlateImage: true, vegetableBackground: true, societyRegistrationReview: true, adminPasswordReset: true, existingAdminPromotion: true, cookAndSocietyRemoval: true, adminBackground: true, permanentAdminDeletes: true, societySessionRevocation: true, removedCookCashoutOnly: true } });
+  if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, service: 'CookCircle MVP API', build: USE_POSTGRES ? 'postgres-migration-bridge-v1' : 'sqlite-dynamic-stakeholders-v1', database: { engine: USE_POSTGRES ? 'PostgreSQL' : 'SQLite', connected: sql.prepare('SELECT 1 AS ok').get().ok === 1, persistent: true, ...(USE_POSTGRES ? {} : { file: path.basename(DB_FILE) }) }, features: { dynamicPersistentDatabase: true, bookingCheckinCodeInHouseholdBookings: true, publicHelpRequests: true, resolvedHelpRequestClear: true, emailMobileSignupVerification: true, cookSignupWithoutResidence: true, cookDefaultAvatars: true, profilePhotoCrop: true, alphanumericCaptcha: true, caseSensitiveMixedCaptcha: true, dietPlateImage: true, vegetableBackground: true, societyRegistrationReview: true, adminPasswordReset: true, existingAdminPromotion: true, cookAndSocietyRemoval: true, adminBackground: true, permanentAdminDeletes: true, societySessionRevocation: true, removedCookCashoutOnly: true } });
   if (req.method === 'GET' && url.pathname === '/api/societies') return send(res, 200, { societies: db.societies });
   if (req.method === 'GET' && url.pathname === '/api/services') return send(res,200,{services:sql.prepare('SELECT id,name,duration_minutes AS durationMinutes,base_price_paise AS pricePaise FROM service_categories WHERE active=1 ORDER BY name').all()});
 

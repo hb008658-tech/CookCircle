@@ -1,135 +1,133 @@
-# Host CookCircle and keep updating it
+# Host CookCircle on Render with Supabase
 
-This guide uses GitHub and Render. It gives the existing Node.js + SQLite app a
-public `onrender.com` URL, keeps the database on a persistent disk, and deploys
-each update pushed to GitHub.
+This setup keeps CookCircle's website and backend together on Render, while
+Supabase stores the live data. The migration tool copies the local SQLite
+database into Supabase and re-encrypts saved cook documents and profile photos
+with a new private key. It never writes your database password or keys into the
+project files.
 
-## Before inviting real users
+## Before you start
 
-- The hosted database starts empty. The local `cookcircle.sqlite` and Windows
-  DPAPI secret files are deliberately excluded from GitHub. Do not upload them
-  to the repository. Moving existing accounts/documents needs a separate,
-  secure migration; a fresh deployment will need new signups.
-- Set `COOKCIRCLE_DEMO_ACCOUNTS=off` and
-  `COOKCIRCLE_VERIFICATION_MODE=production` in Render. Configure real email
-  delivery before accepting signups; add Twilio settings too if users should
-  verify by SMS.
-- The current custom CAPTCHA answer is returned by the CAPTCHA API, so it is
-  suitable for a prototype but is not a secure public anti-bot check. Replace
-  it with server-verified Turnstile or an equivalent provider before collecting
-  real identity documents. Payments in this version are simulated; no actual
-  card payments are processed.
-- This SQLite setup is for one running service instance. Do not scale it to
-  multiple instances.
+- Do not publish `.cookcircle-*.dpapi`, `.env`, `cookcircle.sqlite*`, or any
+  password/key in a screenshot. The repository's `.gitignore` excludes them.
+- Use the Supabase **Session pooler** connection string (the one using the
+  pooler host and port 5432), not a Supabase API key or `SUPABASE_URL`.
+  Copy the whole URI from **Connect → Session pooler**. Its username should
+  start `postgres.` followed by your project reference. Replace only the
+  password placeholder with your database password; percent-encode reserved
+  symbols if the password contains them.
+- Download the project's public database CA certificate in Supabase under
+  **Project Settings → Database → SSL Configuration**. Save it in this folder
+  as `supabase-ca.crt`. CookCircle uses it to verify Supabase's TLS certificate;
+  certificate checks stay on.
+- Keep the existing local database and its protected key file until the hosted
+  site has been confirmed. The migration creates a separate backup first.
+- Keep one Render service instance. This compatibility bridge is for a small
+  single-instance MVP; it serializes database calls, so it is not intended for
+  high traffic or autoscaling.
 
-## 1. Publish the code privately to GitHub
+## 1. Copy your local records into Supabase
 
-1. Install GitHub Desktop and sign in to your GitHub account.
-2. In GitHub Desktop, choose **File → Add Local Repository** and select this
-   folder: `C:\Users\hb123\Documents\Codex\2026-11-15\0\outputs`.
-3. If GitHub Desktop says the folder is not a repository, open PowerShell and
-   run:
+1. Download the CA certificate as described above and save it in the `outputs`
+   folder as `supabase-ca.crt`.
+2. Close CookCircle by pressing **Ctrl+C** in the PowerShell window running the
+   server. Leave the SQLite database and `.cookcircle-document-key.dpapi` file
+   in the `outputs` folder.
+3. Open File Explorer and go to:
+   `C:\Users\hb123\Documents\Codex\2026-11-15\0\outputs`
+4. Double-click `migrate-cookcircle-to-supabase.cmd`.
+5. When asked, type `MIGRATE` and press Enter.
+6. Paste the full Supabase Session Pooler connection string at the hidden
+   prompt. It will not appear on screen. Press Enter. Do not paste it into chat
+   or save it in a project file.
+7. Wait for `CookCircle SQLite → Supabase migration completed.` and the table
+   row counts. If the tool reports an error, the SQLite source is unchanged;
+   stop and resolve the message before trying again.
+8. The tool saves a private local backup under `Documents\CookCircle-Backups`
+   and stores the replacement document key in a Windows-protected file. After a
+   successful copy, the new document key is placed on the clipboard.
 
-   ```powershell
-   Set-Location 'C:\Users\hb123\Documents\Codex\2026-11-15\0\outputs'
-   git init
-   ```
+If the command window closed before you could read the result, do not run the
+migration again. Double-click `verify-cookcircle-supabase.cmd`, enter the same
+connection string at its hidden prompt, and confirm all table totals say
+`MATCH`. This check is read-only and does not require either encryption key.
 
-   Then return to GitHub Desktop and add the folder again.
-4. Click **Publish repository**. Keep **Keep this code private** selected.
-5. Confirm the first commit contains the app files and images. It must not
-   contain `cookcircle.sqlite`, `cookcircle.sqlite-wal`,
-   `cookcircle.sqlite-shm`, `cookcircle-data.json`, `.cookcircle-*.dpapi`, or
-   any `.env` file. `.gitignore` excludes these by default.
+The importer refuses to copy over data if any CookCircle table in Supabase
+already contains records. It copies all current CookCircle tables and verifies
+the row counts. It re-encrypts existing cook contact details, profile photos,
+and identity documents for the new key. Existing phone sign-in hashes are
+preserved separately.
 
-## 2. Create the hosted service
+## 2. Update your Render service
 
-1. Create a Render account at [render.com](https://render.com/).
-2. In the Render dashboard, choose **New → Web Service**, connect GitHub, and
-   select the private CookCircle repository.
-3. Set the service options:
+1. Open the CookCircle service in Render. If you are still on the setup page
+   showing **$7/month**, cancel that draft and choose the Free instance before
+   creating the service. Supabase is the persistent database, so Render does
+   not need a disk.
+2. In the service's **Settings**, use:
+   - Build command: `npm install`
+   - Start command: `npm start`
+   - Health check path: `/api/health`
+3. Open the service's **Environment** tab and add these variables. Click **Add
+   Environment Variable** for each row:
 
-   - **Runtime:** Node
-   - **Branch:** `main`
-   - **Build command:** `npm install`
-   - **Start command:** `npm start`
-   - **Health check path:** `/api/health`
-   - **Instance:** choose a paid plan if keeping SQLite. Render's Free web
-     services cannot attach persistent disks.
-
-4. In **Advanced**, add a persistent disk:
-
-   - **Mount path:** `/var/data`
-   - **Size:** 1 GB to start
-
-5. Add these environment variables under the service's **Environment** page:
+   Replace any document key you already entered there with the new key created
+   by the migration. The source/local key is not the hosted document key.
 
    | Key | Value |
    | --- | --- |
-   | `COOKCIRCLE_DB_FILE` | `/var/data/cookcircle.sqlite` |
-   | `COOKCIRCLE_DOCUMENT_KEY` | A private 64-character hexadecimal key (generate as described below) |
-   | `COOKCIRCLE_ADMIN_EMAIL` | The email address you will use for the admin login |
-   | `COOKCIRCLE_ADMIN_PASSWORD` | A new, strong admin password |
+   | `DATABASE_URL` | Full Supabase Session Pooler connection string |
+   | `COOKCIRCLE_DOCUMENT_KEY` | The new key currently on your clipboard from the migration |
+   | `COOKCIRCLE_PHONE_HASH_KEY` | The old local key, copied by double-clicking `copy-cookcircle-key.cmd` |
    | `COOKCIRCLE_DEMO_ACCOUNTS` | `off` |
-   | `COOKCIRCLE_VERIFICATION_MODE` | `production` |
 
-   Generate a new document key locally in PowerShell with:
+   Keep the old key in `COOKCIRCLE_PHONE_HASH_KEY` so existing mobile sign-ins
+   continue to match. The migration key is different and goes in
+   `COOKCIRCLE_DOCUMENT_KEY` to unlock the re-encrypted documents and photos.
+   First paste the clipboard value from the migration into
+   `COOKCIRCLE_DOCUMENT_KEY`. Then double-click `copy-cookcircle-key.cmd` and
+   paste its clipboard value into `COOKCIRCLE_PHONE_HASH_KEY`. If you need to
+   copy the new key again, double-click `copy-cookcircle-hosted-key.cmd`.
 
-   ```powershell
-   node -p "require('node:crypto').randomBytes(32).toString('hex')"
-   ```
+4. Do not add the database password or either key to GitHub, a source file, or
+   a chat message. Enter them directly into Render's Value fields.
+5. Click **Save Changes**. Render restarts/redeploys the service with these
+   settings.
 
-   Paste it directly into Render as `COOKCIRCLE_DOCUMENT_KEY`. Save it in a
-   password manager. Do not commit it to GitHub. If importing existing
-   encrypted cook documents, the hosted service must instead use the original
-   document key, not a new one.
+If you have not configured the admin credentials for this migrated database,
+set `COOKCIRCLE_ADMIN_EMAIL` and `COOKCIRCLE_ADMIN_PASSWORD` to the admin login
+you intend to use. Supplying these on startup sets that account as the platform
+administrator and resets its password to the supplied value.
 
-6. For email signup verification, add the configured Gmail sender credentials
-   as Render environment variables:
+## 3. Publish the new backend code
 
-   - `GMAIL_SMTP_USER` — your Gmail address
-   - `GMAIL_SMTP_APP_PASSWORD` — your Google app password
+1. Open GitHub Desktop and select the local **CookCircle** repository.
+2. The new migration/backend files should appear under **Changes**. Review that
+   no `.dpapi`, `.sqlite`, `.env`, or secret file is selected. `supabase-ca.crt`
+   is a public certificate and should be included with the project files.
+3. Enter a summary such as `Add Supabase Postgres hosting` and click **Commit
+   to main**.
+4. Click **Push origin**. Render will build and deploy the pushed version.
+5. In Render, wait for the deployment to say **Live**. Open the service URL,
+   then add `/api/health`. It should report `database.engine` as `PostgreSQL`,
+   `database.connected` as `true`, and build `postgres-migration-bridge-v1`.
+6. Log in and check a few existing accounts, bookings, societies, cook photos,
+   and admin records before inviting anyone. Your browser may require a fresh
+   login because the hosted site has a different web address.
 
-   Keep these secret. Render Free blocks outbound SMTP ports, so this Gmail
-   SMTP setup requires a paid web service. SMS verification also needs the
-   relevant Twilio environment variables; without them, mobile verification
-   will not send texts.
+## Future website updates
 
-7. Save the settings and create the web service. Wait for Render's deploy to
-   show **Live**.
+Edit the project files, then use GitHub Desktop to review, commit, and **Push
+origin**. Render automatically deploys each pushed change. The data remains in
+Supabase and is not replaced by a website code update.
 
-## 3. Open and verify the site
+## Important limitations
 
-1. On the Render service page, open its `onrender.com` URL. A custom domain is
-   optional.
-2. Open `<your-service-url>/api/health`. Confirm it reports:
-
-   - `build: "sqlite-dynamic-stakeholders-v1"`
-   - `database.connected: true`
-   - `database.file: "cookcircle.sqlite"`
-
-3. Log in with the admin email and password set in Render. Register a test
-   society and use test accounts before inviting anyone else.
-
-## 4. Publish future website updates
-
-1. Edit the files in this `outputs` folder. Keep the HTML, server, package
-   files, and image assets together in the repository root.
-2. Open GitHub Desktop, review the changed files, enter a short summary, and
-   click **Commit to main**.
-3. Click **Push origin**. Render automatically builds and deploys the new
-   commit from `main`.
-4. Watch the Render service's **Events/Deploys** page until it shows **Live**,
-   then refresh the public URL.
-
-The database lives at `/var/data/cookcircle.sqlite`, outside the replaceable
-code files, so code deploys keep the same hosted records. Keep one service
-instance and maintain separate database backups.
-
-## Free hosting note
-
-This direct SQLite deployment is not durably free on Render: Free web services
-do not support persistent disks, and Render's Free Postgres expires after 30
-days. A free persistent-database route would require changing the backend to
-use a different managed database. Check [Render pricing](https://render.com/pricing)
-before creating paid resources.
+- The backend supports a small, single Render instance with Supabase Postgres.
+  It uses a synchronous compatibility bridge, which serializes requests; plan a
+  proper asynchronous database refactor before production/high traffic.
+- Render Free instances may sleep when idle. Supabase Free projects may pause
+  after a period of inactivity. First visits after sleep/pause can be delayed.
+- Email/SMS verification still requires a delivery provider configured in
+  Render. The database migration does not send verification messages by itself.
+- Payments in this version are simulated, not real card charges.

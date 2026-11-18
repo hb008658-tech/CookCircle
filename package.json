@@ -2,11 +2,15 @@
   "name": "cookcircle",
   "version": "1.0.0",
   "private": true,
-  "description": "CookCircle web app and SQLite-backed Node.js API",
+  "description": "CookCircle web app with local SQLite and hosted PostgreSQL support",
   "engines": {
     "node": ">=22.5.0 <27.0.0"
   },
   "scripts": {
-    "start": "node cookcircle-server.js"
+    "start": "node cookcircle-server.js",
+    "migrate:hosted": "node migrate-sqlite-to-postgres.js"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
   }
 }

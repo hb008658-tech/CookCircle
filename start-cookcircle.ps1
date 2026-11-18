@@ -45,5 +45,5 @@ if (Test-Path -LiteralPath $deliveryConfigPath) {
 Set-Location -LiteralPath $PSScriptRoot
 Write-Host 'Starting CookCircle at http://localhost:3000'
 Write-Host 'The encryption key is saved for this Windows account and is not displayed.'
-Write-Host 'Server build: cook-signup-gmail-smtp-v3 (Gmail, Resend, and Twilio verification)'
+Write-Host 'Backend mode: local SQLite by default; PostgreSQL when DATABASE_URL is configured.'
 node .\cookcircle-server.js
