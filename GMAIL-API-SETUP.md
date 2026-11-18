@@ -1,5 +1,10 @@
 # Enable CookCircle verification email on Render Free
 
+For the simpler Google Apps Script method, use
+[GOOGLE-APPS-SCRIPT-EMAIL-SETUP.md](GOOGLE-APPS-SCRIPT-EMAIL-SETUP.md). The Gmail
+API instructions below are the older alternative and are not needed when the
+Apps Script relay is configured.
+
 CookCircle now sends signup codes through the Gmail API over HTTPS. This avoids
 Render Free's blocked SMTP ports. The OAuth client secret and refresh token are
 private: enter them only in Render's Environment settings and never commit or

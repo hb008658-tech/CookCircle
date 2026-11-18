@@ -472,8 +472,26 @@ async function sendGmailVerificationEmail(destination,code){
   const payload=await response.json().catch(()=>({}));
   if(!response.ok){console.error('CookCircle Gmail API send failed:',response.status,payload.error?.status||payload.error?.message||'unknown error');throw new Error('Gmail API did not accept the message. Check Gmail API authorization and sender settings.');}
 }
+async function sendAppsScriptVerificationEmail(destination,code){
+  const endpoint=String(process.env.COOKCIRCLE_GMAIL_RELAY_URL||'').trim(),relayToken=String(process.env.COOKCIRCLE_GMAIL_RELAY_TOKEN||'').trim();
+  if(!endpoint||!relayToken)throw new Error('Google Apps Script email relay settings are incomplete.');
+  let relayUrl;
+  try{relayUrl=new URL(endpoint)}catch{throw new Error('Google Apps Script email relay URL is invalid.');}
+  if(relayUrl.protocol!=='https:'||relayUrl.hostname!=='script.google.com'||!/^\/macros\/s\/[^/]+\/exec$/.test(relayUrl.pathname))throw new Error('Google Apps Script email relay URL is invalid.');
+  let response;
+  try{
+    response=await fetch(relayUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:relayToken,to:destination,code}),signal:AbortSignal.timeout(20000)});
+  }catch(e){console.error('CookCircle Google Apps Script relay request failed:',e.name||'request error');throw new Error('Google Apps Script could not be reached. Check the relay URL and deployment access.');}
+  let payload={};
+  try{payload=await response.json()}catch{}
+  if(!response.ok||payload.ok!==true){console.error('CookCircle Google Apps Script relay rejected email:',response.status,payload.error||'invalid response');throw new Error('Google Apps Script could not send the email. Check its deployment, authorization, and daily sending limit.');}
+}
 async function deliverSignupVerificationCode(channel,destination,code){
   if(channel!=='email')throw Object.assign(new Error('Email is the only available signup verification method.'),{httpStatus:400});
+  if(process.env.COOKCIRCLE_GMAIL_RELAY_URL||process.env.COOKCIRCLE_GMAIL_RELAY_TOKEN){
+    try{await sendAppsScriptVerificationEmail(destination,code)}catch(e){console.error('CookCircle Google Apps Script delivery failed:',e.message);throw Object.assign(new Error('Gmail could not send the code through the Google Apps Script relay. Check the relay settings in Render and the Apps Script executions page.'),{httpStatus:502})}
+    return {deliveryMode:'google-apps-script'};
+  }
   if(process.env.GMAIL_API_CLIENT_ID&&process.env.GMAIL_API_CLIENT_SECRET&&process.env.GMAIL_API_REFRESH_TOKEN&&process.env.GMAIL_API_SENDER){
     try{await sendGmailVerificationEmail(destination,code)}catch(e){console.error('CookCircle Gmail API delivery failed:',e.message);throw Object.assign(new Error('Gmail could not send the code. Check the Gmail API settings in Render and the server logs.'),{httpStatus:502})}
     return {deliveryMode:'gmail-api'};
@@ -483,8 +501,8 @@ async function deliverSignupVerificationCode(channel,destination,code){
     if(!response.ok){console.error('CookCircle email delivery failed:',response.status,(await response.text()).slice(0,300));throw Object.assign(new Error('The email provider could not send your code. Check the API key and verified sender address.'),{httpStatus:502})}
     return {deliveryMode:'email'};
   }
-  if(process.env.RENDER&&process.env.GMAIL_SMTP_USER&&process.env.GMAIL_SMTP_APP_PASSWORD)throw Object.assign(new Error('Gmail SMTP is blocked on Render Free. Configure Gmail API OAuth settings to send email over HTTPS.'),{httpStatus:503});
-  throw Object.assign(new Error('Email delivery is not configured. Add Gmail API OAuth settings or Resend credentials.'),{httpStatus:503});
+  if(process.env.RENDER&&process.env.GMAIL_SMTP_USER&&process.env.GMAIL_SMTP_APP_PASSWORD)throw Object.assign(new Error('Gmail SMTP is blocked on Render Free. Configure the Google Apps Script relay or Gmail API OAuth settings to send email over HTTPS.'),{httpStatus:503});
+  throw Object.assign(new Error('Email delivery is not configured. Add Google Apps Script relay settings or Gmail API OAuth settings.'),{httpStatus:503});
 }
 
 function currentUser(req) {
