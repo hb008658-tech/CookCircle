@@ -89,6 +89,21 @@ preserved separately.
    paste its clipboard value into `COOKCIRCLE_PHONE_HASH_KEY`. If you need to
    copy the new key again, double-click `copy-cookcircle-hosted-key.cmd`.
 
+   Email codes on Render Free must use the Gmail API over HTTPS; Gmail SMTP is
+   blocked on Render Free. Follow `GMAIL-API-SETUP.md` to create OAuth values,
+   then add these four private variables in Render:
+
+   | Key | Value |
+   | --- | --- |
+   | `GMAIL_API_SENDER` | The Gmail address authorized for sending |
+   | `GMAIL_API_CLIENT_ID` | OAuth client ID from Google Cloud |
+   | `GMAIL_API_CLIENT_SECRET` | OAuth client secret from Google Cloud |
+   | `GMAIL_API_REFRESH_TOKEN` | Refresh token generated after granting Gmail send access |
+
+   After the Gmail API variables are saved, remove the old
+   `GMAIL_SMTP_USER` and `GMAIL_SMTP_APP_PASSWORD` variables. The new backend
+   sends through Google's HTTPS API and does not use the app password.
+
 4. Do not add the database password or either key to GitHub, a source file, or
    a chat message. Enter them directly into Render's Value fields.
 5. Click **Save Changes**. Render restarts/redeploys the service with these

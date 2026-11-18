@@ -8,8 +8,6 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const USE_POSTGRES = Boolean(process.env.DATABASE_URL);
 const { PostgresSyncDatabase } = USE_POSTGRES ? require('./cookcircle-postgres-sync') : {};
-const tls = require('node:tls');
-const readline = require('node:readline');
 
 const PORT = Number(process.env.PORT || 3000);
 const WEB_ROOT = __dirname;
@@ -454,34 +452,39 @@ function verifyPassword(password, user) {
 function normalizeSignupPhone(value){return String(value||'').replace(/[\s().-]/g,'')}
 function phoneLookupHash(value){const keyValue=process.env.COOKCIRCLE_PHONE_HASH_KEY||process.env.COOKCIRCLE_DOCUMENT_KEY||'';const key=/^[a-f0-9]{64}$/i.test(keyValue)?Buffer.from(keyValue,'hex'):null;if(!key)throw Object.assign(new Error('Phone sign-in needs COOKCIRCLE_PHONE_HASH_KEY.'),{httpStatus:503});return crypto.createHmac('sha256',key).update(normalizeSignupPhone(value)).digest('hex')}
 function maskVerificationDestination(channel,destination){if(channel==='email'){const [name,domain]=destination.split('@');return (name.slice(0,1)||'')+'••••@'+domain}return '••••'+destination.slice(-4)}
+let gmailApiAccessToken='';let gmailApiAccessTokenExpiresAt=0;
+async function getGmailApiAccessToken(){
+  const clientId=String(process.env.GMAIL_API_CLIENT_ID||'').trim(),clientSecret=String(process.env.GMAIL_API_CLIENT_SECRET||''),refreshToken=String(process.env.GMAIL_API_REFRESH_TOKEN||'').trim();
+  if(!clientId||!clientSecret||!refreshToken)throw new Error('Gmail API OAuth settings are incomplete.');
+  if(gmailApiAccessToken&&gmailApiAccessTokenExpiresAt>Date.now()+60_000)return gmailApiAccessToken;
+  const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:clientId,client_secret:clientSecret,refresh_token:refreshToken,grant_type:'refresh_token'})});
+  const payload=await response.json().catch(()=>({}));
+  if(!response.ok||!payload.access_token){console.error('CookCircle Gmail API token refresh failed:',response.status,payload.error||'unknown error',payload.error_description||'');throw new Error('Gmail API could not authorize the sender. Check the OAuth client and refresh token.');}
+  gmailApiAccessToken=payload.access_token;gmailApiAccessTokenExpiresAt=Date.now()+Math.max(60,Number(payload.expires_in)||3600)*1000;return gmailApiAccessToken;
+}
 async function sendGmailVerificationEmail(destination,code){
-  const sender=String(process.env.GMAIL_SMTP_USER||'').trim().toLowerCase(),appPassword=String(process.env.GMAIL_SMTP_APP_PASSWORD||'').replace(/\s/g,'');
-  if(!/^\S+@\S+\.\S+$/.test(sender)||!appPassword)throw new Error('Gmail SMTP sender settings are incomplete.');
-  const socket=tls.connect({host:'smtp.gmail.com',port:465,servername:'smtp.gmail.com'});
-  socket.setTimeout(20000,()=>socket.destroy(new Error('Gmail SMTP connection timed out.')));
-  const reader=readline.createInterface({input:socket,crlfDelay:Infinity}),iterator=reader[Symbol.asyncIterator]();
-  async function response(){const lines=[];let row;do{row=await iterator.next();if(row.done)throw new Error('Gmail SMTP connection closed unexpectedly.');lines.push(row.value)}while(!/^\d{3} /.test(row.value));return {code:Number(row.value.slice(0,3)),text:lines.join(' ')};}
-  async function command(value,allowed){socket.write(value+'\r\n');const result=await response();if(!allowed.includes(result.code))throw new Error('Gmail SMTP rejected a command with status '+result.code+'.');return result;}
-  try{
-    let greeting=await response();if(greeting.code!==220)throw new Error('Gmail SMTP greeting failed.');
-    await command('EHLO localhost',[250]);await command('AUTH LOGIN',[334]);await command(Buffer.from(sender).toString('base64'),[334]);await command(Buffer.from(appPassword).toString('base64'),[235]);
-    await command('MAIL FROM:<'+sender+'>',[250]);await command('RCPT TO:<'+destination+'>',[250,251]);await command('DATA',[354]);
-    const body='Your CookCircle verification code is '+code+'. It expires in 10 minutes. If you did not request it, ignore this email.';
-    const message=['From: CookCircle <'+sender+'>','To: '+destination,'Subject: Your CookCircle verification code','MIME-Version: 1.0','Content-Type: text/plain; charset=UTF-8','Content-Transfer-Encoding: 8bit','','CookCircle verification code: '+code,'This code expires in 10 minutes. If you did not request it, ignore this email.'].join('\r\n').replace(/(^|\r\n)\./g,'$1..');
-    socket.write(message+'\r\n.\r\n');const sent=await response();if(sent.code!==250)throw new Error('Gmail SMTP did not accept the message.');
-    socket.write('QUIT\r\n');
-  }finally{reader.close();socket.destroy();}
+  const sender=String(process.env.GMAIL_API_SENDER||'').trim().toLowerCase();
+  if(!/^\S+@\S+\.\S+$/.test(sender))throw new Error('Gmail API sender address is not configured.');
+  const token=await getGmailApiAccessToken();
+  const message=['From: CookCircle <'+sender+'>','To: '+destination,'Subject: Your CookCircle verification code','MIME-Version: 1.0','Content-Type: text/plain; charset=UTF-8','Content-Transfer-Encoding: 8bit','','Your CookCircle verification code is '+code+'.','This code expires in 10 minutes. If you did not request it, ignore this email.'].join('\r\n');
+  const raw=Buffer.from(message,'utf8').toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  const response=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({raw})});
+  const payload=await response.json().catch(()=>({}));
+  if(!response.ok){console.error('CookCircle Gmail API send failed:',response.status,payload.error?.status||payload.error?.message||'unknown error');throw new Error('Gmail API did not accept the message. Check Gmail API authorization and sender settings.');}
 }
 async function deliverSignupVerificationCode(channel,destination,code){
   if(channel!=='email')throw Object.assign(new Error('Email is the only available signup verification method.'),{httpStatus:400});
-  if(process.env.GMAIL_SMTP_USER&&process.env.GMAIL_SMTP_APP_PASSWORD){
-    try{await sendGmailVerificationEmail(destination,code)}catch(e){console.error('CookCircle Gmail delivery failed:',e.message);throw Object.assign(new Error('Gmail could not send the code. Check the Gmail address, app password, and 2-Step Verification setup.'),{httpStatus:502})}
-    return {deliveryMode:'gmail-smtp'};
+  if(process.env.GMAIL_API_CLIENT_ID&&process.env.GMAIL_API_CLIENT_SECRET&&process.env.GMAIL_API_REFRESH_TOKEN&&process.env.GMAIL_API_SENDER){
+    try{await sendGmailVerificationEmail(destination,code)}catch(e){console.error('CookCircle Gmail API delivery failed:',e.message);throw Object.assign(new Error('Gmail could not send the code. Check the Gmail API settings in Render and the server logs.'),{httpStatus:502})}
+    return {deliveryMode:'gmail-api'};
   }
-  if(!process.env.RESEND_API_KEY||!process.env.COOKCIRCLE_EMAIL_FROM)throw Object.assign(new Error('Email delivery is not configured. Set up Gmail SMTP in configure-cookcircle-delivery.cmd or add Resend credentials.'),{httpStatus:503});
-  const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.COOKCIRCLE_EMAIL_FROM,to:[destination],subject:'Your CookCircle verification code',text:'Your CookCircle verification code is '+code+'. It expires in 10 minutes. If you did not request it, ignore this email.'})});
-  if(!response.ok){console.error('CookCircle email delivery failed:',response.status,(await response.text()).slice(0,300));throw Object.assign(new Error('The email provider could not send your code. Check the API key and verified sender address.'),{httpStatus:502})}
-  return {deliveryMode:'email'};
+  if(process.env.RESEND_API_KEY&&process.env.COOKCIRCLE_EMAIL_FROM){
+    const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.COOKCIRCLE_EMAIL_FROM,to:[destination],subject:'Your CookCircle verification code',text:'Your CookCircle verification code is '+code+'. It expires in 10 minutes. If you did not request it, ignore this email.'})});
+    if(!response.ok){console.error('CookCircle email delivery failed:',response.status,(await response.text()).slice(0,300));throw Object.assign(new Error('The email provider could not send your code. Check the API key and verified sender address.'),{httpStatus:502})}
+    return {deliveryMode:'email'};
+  }
+  if(process.env.RENDER&&process.env.GMAIL_SMTP_USER&&process.env.GMAIL_SMTP_APP_PASSWORD)throw Object.assign(new Error('Gmail SMTP is blocked on Render Free. Configure Gmail API OAuth settings to send email over HTTPS.'),{httpStatus:503});
+  throw Object.assign(new Error('Email delivery is not configured. Add Gmail API OAuth settings or Resend credentials.'),{httpStatus:503});
 }
 
 function currentUser(req) {
