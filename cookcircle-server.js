@@ -473,27 +473,15 @@ async function sendGmailVerificationEmail(destination,code){
   }finally{reader.close();socket.destroy();}
 }
 async function deliverSignupVerificationCode(channel,destination,code){
-  if(channel==='email'){
-    if(process.env.GMAIL_SMTP_USER&&process.env.GMAIL_SMTP_APP_PASSWORD){
-      try{await sendGmailVerificationEmail(destination,code)}catch(e){console.error('CookCircle Gmail delivery failed:',e.message);throw Object.assign(new Error('Gmail could not send the code. Check the Gmail address, app password, and 2-Step Verification setup.'),{httpStatus:502})}
-      return {deliveryMode:'gmail-smtp'};
-    }
-    if(!process.env.RESEND_API_KEY||!process.env.COOKCIRCLE_EMAIL_FROM)throw Object.assign(new Error('Email delivery is not configured. Set up Gmail SMTP in configure-cookcircle-delivery.cmd or add Resend credentials.'),{httpStatus:503});
-    const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.COOKCIRCLE_EMAIL_FROM,to:[destination],subject:'Your CookCircle verification code',text:'Your CookCircle verification code is '+code+'. It expires in 10 minutes. If you did not request it, ignore this email.'})});
-    if(!response.ok){console.error('CookCircle email delivery failed:',response.status,(await response.text()).slice(0,300));throw Object.assign(new Error('The email provider could not send your code. Check the API key and verified sender address.'),{httpStatus:502})}
-    return {deliveryMode:'email'};
+  if(channel!=='email')throw Object.assign(new Error('Email is the only available signup verification method.'),{httpStatus:400});
+  if(process.env.GMAIL_SMTP_USER&&process.env.GMAIL_SMTP_APP_PASSWORD){
+    try{await sendGmailVerificationEmail(destination,code)}catch(e){console.error('CookCircle Gmail delivery failed:',e.message);throw Object.assign(new Error('Gmail could not send the code. Check the Gmail address, app password, and 2-Step Verification setup.'),{httpStatus:502})}
+    return {deliveryMode:'gmail-smtp'};
   }
-  if(channel==='sms'){
-    const accountSid=process.env.TWILIO_ACCOUNT_SID,authToken=process.env.TWILIO_AUTH_TOKEN,apiKeySid=process.env.TWILIO_API_KEY_SID,apiKeySecret=process.env.TWILIO_API_KEY_SECRET,messagingServiceSid=process.env.TWILIO_MESSAGING_SERVICE_SID,from=process.env.TWILIO_FROM;
-    const twilioUsername=apiKeySid||accountSid,twilioPassword=apiKeySid?apiKeySecret:authToken;
-    if(!accountSid||!twilioUsername||!twilioPassword||!(messagingServiceSid||from))throw Object.assign(new Error('Real mobile delivery is not configured. Set Twilio account credentials and a Messaging Service SID or sender number, then restart CookCircle.'),{httpStatus:503});
-    const form=new URLSearchParams({To:destination,Body:'Your CookCircle verification code is '+code+'. It expires in 10 minutes.'});
-    if(messagingServiceSid)form.set('MessagingServiceSid',messagingServiceSid);else form.set('From',from);
-    const response=await fetch('https://api.twilio.com/2010-04-01/Accounts/'+encodeURIComponent(accountSid)+'/Messages.json',{method:'POST',headers:{Authorization:'Basic '+Buffer.from(twilioUsername+':'+twilioPassword).toString('base64'),'Content-Type':'application/x-www-form-urlencoded'},body:form});
-    if(!response.ok){console.error('CookCircle SMS delivery failed:',response.status,(await response.text()).slice(0,300));throw Object.assign(new Error('The SMS provider could not send your code. Check the Twilio credentials and sender configuration.'),{httpStatus:502})}
-    return {deliveryMode:'sms'};
-  }
-  throw Object.assign(new Error('Choose email or mobile verification.'),{httpStatus:400});
+  if(!process.env.RESEND_API_KEY||!process.env.COOKCIRCLE_EMAIL_FROM)throw Object.assign(new Error('Email delivery is not configured. Set up Gmail SMTP in configure-cookcircle-delivery.cmd or add Resend credentials.'),{httpStatus:503});
+  const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.COOKCIRCLE_EMAIL_FROM,to:[destination],subject:'Your CookCircle verification code',text:'Your CookCircle verification code is '+code+'. It expires in 10 minutes. If you did not request it, ignore this email.'})});
+  if(!response.ok){console.error('CookCircle email delivery failed:',response.status,(await response.text()).slice(0,300));throw Object.assign(new Error('The email provider could not send your code. Check the API key and verified sender address.'),{httpStatus:502})}
+  return {deliveryMode:'email'};
 }
 
 function currentUser(req) {
@@ -534,7 +522,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/admin-legumes-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'admin-legumes-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/household-dried-fruit-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'household-dried-fruit-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/cook-workspace-vegetables-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'cook-workspace-vegetables-background.jpg'));
-  if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, service: 'CookCircle MVP API', build: USE_POSTGRES ? 'postgres-migration-bridge-v1' : 'sqlite-dynamic-stakeholders-v1', database: { engine: USE_POSTGRES ? 'PostgreSQL' : 'SQLite', connected: sql.prepare('SELECT 1 AS ok').get().ok === 1, persistent: true, ...(USE_POSTGRES ? {} : { file: path.basename(DB_FILE) }) }, features: { dynamicPersistentDatabase: true, bookingCheckinCodeInHouseholdBookings: true, publicHelpRequests: true, resolvedHelpRequestClear: true, emailMobileSignupVerification: true, cookSignupWithoutResidence: true, cookDefaultAvatars: true, profilePhotoCrop: true, alphanumericCaptcha: true, caseSensitiveMixedCaptcha: true, dietPlateImage: true, vegetableBackground: true, societyRegistrationReview: true, adminPasswordReset: true, existingAdminPromotion: true, cookAndSocietyRemoval: true, adminBackground: true, permanentAdminDeletes: true, societySessionRevocation: true, removedCookCashoutOnly: true } });
+  if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, service: 'CookCircle MVP API', build: USE_POSTGRES ? 'postgres-migration-bridge-v1' : 'sqlite-dynamic-stakeholders-v1', database: { engine: USE_POSTGRES ? 'PostgreSQL' : 'SQLite', connected: sql.prepare('SELECT 1 AS ok').get().ok === 1, persistent: true, ...(USE_POSTGRES ? {} : { file: path.basename(DB_FILE) }) }, features: { dynamicPersistentDatabase: true, bookingCheckinCodeInHouseholdBookings: true, publicHelpRequests: true, resolvedHelpRequestClear: true, emailSignupVerification: true, mobileSignupVerification: false, cookSignupWithoutResidence: true, cookDefaultAvatars: true, profilePhotoCrop: true, alphanumericCaptcha: true, caseSensitiveMixedCaptcha: true, dietPlateImage: true, vegetableBackground: true, societyRegistrationReview: true, adminPasswordReset: true, existingAdminPromotion: true, cookAndSocietyRemoval: true, adminBackground: true, permanentAdminDeletes: true, societySessionRevocation: true, removedCookCashoutOnly: true } });
   if (req.method === 'GET' && url.pathname === '/api/societies') return send(res, 200, { societies: db.societies });
   if (req.method === 'GET' && url.pathname === '/api/services') return send(res,200,{services:sql.prepare('SELECT id,name,duration_minutes AS durationMinutes,base_price_paise AS pricePaise FROM service_categories WHERE active=1 ORDER BY name').all()});
 
@@ -568,15 +556,11 @@ const server = http.createServer(async (req, res) => {
 
   if(req.method==='POST'&&url.pathname==='/api/auth/verification/send'){
     let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
-    const channel=String(body.channel||''),email=String(body.email||'').trim().toLowerCase(),phone=normalizeSignupPhone(body.phone);
-    if(channel!=='email'&&channel!=='sms')return send(res,400,{error:'Choose email or mobile verification.'});
+    const channel=String(body.channel||''),email=String(body.email||'').trim().toLowerCase();
+    if(channel!=='email')return send(res,400,{error:'Email is the only available signup verification method.'});
     if(channel==='email'&&!/^\S+@\S+\.\S+$/.test(email))return send(res,400,{error:'Enter a valid email address.'});
     if(channel==='email'&&db.users.some(account=>account.email&&account.email.toLowerCase()===email))return send(res,409,{error:'An account with this email already exists. Please log in.'});
-    if(channel==='sms'&&!/^\+[1-9]\d{7,14}$/.test(phone))return send(res,400,{error:'Enter a mobile number with country code, such as +91 98765 43210.'});
-    if(channel==='sms'&&!documentKey())return send(res,503,{error:'Phone verification needs the CookCircle document key. Start the server with start-cookcircle.cmd.'});
-    const phoneHash=channel==='sms'?phoneLookupHash(phone):null;
-    if(phoneHash&&sql.prepare('SELECT id FROM users WHERE phone_hash=?').get(phoneHash))return send(res,409,{error:'An account with this mobile number already exists. Please log in.'});
-    const destination=channel==='email'?email:phone;
+    const destination=email;
     const now=Date.now();for(const [id,item] of signupVerificationChallenges)if(item.expiresAt<now)signupVerificationChallenges.delete(id);for(const [token,item] of signupVerificationProofs)if(item.expiresAt<now)signupVerificationProofs.delete(token);for(const [key,times] of verificationSendHistory){const fresh=times.filter(time=>now-time<60*60_000);if(fresh.length)verificationSendHistory.set(key,fresh);else verificationSendHistory.delete(key)}const existing=body.challengeId?signupVerificationChallenges.get(String(body.challengeId)):null;
     if(body.challengeId&&existing&&(existing.channel!==channel||existing.destination!==destination))return send(res,400,{error:'The verification destination changed. Request a new code.'});
     if(existing&&now-existing.sentAt<60_000)return send(res,429,{error:'Please wait before requesting another code.',retryAfterSeconds:Math.ceil((60_000-(now-existing.sentAt))/1000)});
@@ -593,6 +577,7 @@ const server = http.createServer(async (req, res) => {
   if(req.method==='POST'&&url.pathname==='/api/auth/verification/confirm'){
     let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
     const challenge=signupVerificationChallenges.get(String(body.challengeId||''));
+    if(challenge&&challenge.channel!=='email'){signupVerificationChallenges.delete(challenge.id);return send(res,400,{error:'Email is the only available signup verification method.'})}
     if(!challenge||challenge.expiresAt<Date.now()){if(challenge)signupVerificationChallenges.delete(challenge.id);return send(res,400,{error:'That code expired. Request a new verification code.'})}
     if(challenge.attempts>=5){signupVerificationChallenges.delete(challenge.id);return send(res,429,{error:'Too many incorrect codes. Request a new verification code.'})}
     const supplied=crypto.createHash('sha256').update(String(body.code||'')).digest();
@@ -608,20 +593,19 @@ const server = http.createServer(async (req, res) => {
     if(password.length<8)return send(res,400,{error:'Use a password with at least 8 characters.'});
     if(url.pathname.endsWith('/signup')){
       const channel=String(body.verificationChannel||''),phone=normalizeSignupPhone(body.phone);
-      if(channel==='email'&&!/^\S+@\S+\.\S+$/.test(email))return send(res,400,{error:'Enter a valid email address.'});
-      if(channel==='sms'&&!/^\+[1-9]\d{7,14}$/.test(phone))return send(res,400,{error:'Enter a mobile number with country code, such as +91 98765 43210.'});
-      if(channel!=='email'&&channel!=='sms')return send(res,400,{error:'Choose email or mobile verification.'});
+      if(channel!=='email')return send(res,400,{error:'Email is the only available signup verification method.'});
+      if(!/^\S+@\S+\.\S+$/.test(email))return send(res,400,{error:'Enter a valid email address.'});
     }else if(!/^\S+@\S+\.\S+$/.test(email)&&!/^\+[1-9]\d{7,14}$/.test(normalizeSignupPhone(body.email)))return send(res,400,{error:'Enter a valid email address or mobile number.'});
     if (url.pathname.endsWith('/signup')) {
       const name = String(body.name || '').trim(), role = String(body.role || 'customer'), householdName = role === 'customer' ? String(body.householdName || '').trim().slice(0,80) : ''; let societyId = String(body.societyId || '');
       let apartment = String(body.apartment || '').trim(), address='', phone='', yearsExperience=0, encryptedDocs=[],serviceSocietyIds=[];
       if (!['customer','cook','society_admin'].includes(role)) return send(res, 403, { error: 'Platform administrator accounts must be configured by the operator.' });
       const verificationToken=String(body.verificationToken||''),verificationChannel=String(body.verificationChannel||''),verificationProof=signupVerificationProofs.get(verificationToken);
-      const verificationDestination=verificationChannel==='email'?email:verificationChannel==='sms'?normalizeSignupPhone(body.phone):'';
-      if(!verificationProof||verificationProof.expiresAt<Date.now()||verificationProof.channel!==verificationChannel||verificationProof.destination!==verificationDestination)return send(res,400,{error:'Verify the email address or mobile number you selected before creating your account.'});
+      const verificationDestination=verificationChannel==='email'?email:'';
+      if(!verificationProof||verificationProof.expiresAt<Date.now()||verificationProof.channel!=='email'||verificationChannel!=='email'||verificationProof.destination!==verificationDestination)return send(res,400,{error:'Verify your email address before creating your account.'});
       if (name.length < 2 || (role !== 'cook' && !sql.prepare('SELECT id FROM societies WHERE id=? AND is_active=1').get(societyId))) return send(res, 400, { error: 'Add your name and choose an active service society.' });
       if (role === 'cook') societyId = null;
-      const signupPhoneHash=verificationChannel==='sms'?phoneLookupHash(body.phone):null;if(email&&db.users.some(u=>u.email&&u.email.toLowerCase()===email))return send(res,409,{error:'An account with this email already exists. Please log in.'});if(signupPhoneHash&&sql.prepare('SELECT id FROM users WHERE phone_hash=?').get(signupPhoneHash))return send(res,409,{error:'An account with this mobile number already exists. Please log in.'});
+      const signupPhoneHash=null;if(db.users.some(u=>u.email&&u.email.toLowerCase()===email))return send(res,409,{error:'An account with this email already exists. Please log in.'});
       if(role==='cook'){
         address=String(body.address||'').trim();phone=String(body.phone||'').trim();yearsExperience=Number(body.yearsExperience);
         if(address.length<10||address.length>500||!/^[+\d][\d\s().-]{8,19}$/.test(phone)||!Number.isInteger(yearsExperience)||yearsExperience<0||yearsExperience>60)return send(res,400,{error:'Enter a complete address, a valid phone number, and cooking experience from 0 to 60 years.'});
@@ -633,7 +617,7 @@ const server = http.createServer(async (req, res) => {
         if(!Array.isArray(body.documents)||body.documents.length<1||body.documents.length>3)return send(res,400,{error:'Upload 1 to 3 identity verification documents.'});
         try{encryptedDocs=body.documents.map(encryptCookDocument)}catch(e){return send(res,400,{error:e.message})}if(encryptedDocs.reduce((n,d)=>n+d.encrypted.length,0)>10*1024*1024)return send(res,400,{error:'Identity documents must total 10 MB or less.'});apartment='Cook application';
       }else if(!apartment)return send(res,400,{error:'Enter your apartment number.'});
-      const pass = hashPassword(password); const user = { id: crypto.randomUUID(), name, householdName, email:verificationChannel==='email'?email:null, phoneHash:signupPhoneHash, societyId, apartment, role, address, phone, yearsExperience, salt: pass.salt, passwordHash: pass.hash, createdAt: new Date().toISOString() };
+      const pass = hashPassword(password); const user = { id: crypto.randomUUID(), name, householdName, email, phoneHash:signupPhoneHash, societyId, apartment, role, address, phone, yearsExperience, salt: pass.salt, passwordHash: pass.hash, createdAt: new Date().toISOString() };
       insertUser(user);if(role==='cook'){const cook=sql.prepare('SELECT id FROM cook_profiles WHERE user_id=?').get(user.id),addArea=sql.prepare("INSERT INTO cook_service_societies(cook_id,society_id,status) VALUES(?,?,'pending')");for(const societyId of serviceSocietyIds)addArea.run(cook.id,societyId);storeCookDocuments(cook.id,body.documents,encryptedDocs)}signupVerificationProofs.delete(verificationToken);return send(res, 201, { token: tokenFor(user), user: cleanUser(user) });
     }
     let user;if(/^\S+@\S+\.\S+$/.test(email))user=db.users.find(account=>account.email&&account.email.toLowerCase()===email);else{try{const phoneHash=phoneLookupHash(body.email);user=db.users.find(account=>account.phoneHash===phoneHash)}catch{user=null}}
