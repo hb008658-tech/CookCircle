@@ -446,8 +446,15 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   return { salt, hash: crypto.scryptSync(password, salt, 64).toString('hex') };
 }
 function verifyPassword(password, user) {
-  const candidate = crypto.scryptSync(password, user.salt, 64);
-  return crypto.timingSafeEqual(candidate, Buffer.from(user.passwordHash, 'hex'));
+  if (typeof password !== 'string' || !user || typeof user.salt !== 'string' ||
+      typeof user.passwordHash !== 'string' || !/^[a-f0-9]{128}$/i.test(user.passwordHash)) return false;
+  try {
+    const candidate = crypto.scryptSync(password, user.salt, 64);
+    const stored = Buffer.from(user.passwordHash, 'hex');
+    return stored.length === candidate.length && crypto.timingSafeEqual(candidate, stored);
+  } catch {
+    return false;
+  }
 }
 function normalizeSignupPhone(value){return String(value||'').replace(/[\s().-]/g,'')}
 function phoneLookupHash(value){const keyValue=process.env.COOKCIRCLE_PHONE_HASH_KEY||process.env.COOKCIRCLE_DOCUMENT_KEY||'';const key=/^[a-f0-9]{64}$/i.test(keyValue)?Buffer.from(keyValue,'hex'):null;if(!key)throw Object.assign(new Error('Phone sign-in needs COOKCIRCLE_PHONE_HASH_KEY.'),{httpStatus:503});return crypto.createHmac('sha256',key).update(normalizeSignupPhone(value)).digest('hex')}
@@ -536,6 +543,7 @@ function serveFile(res, file) {
 }
 
 const server = http.createServer(async (req, res) => {
+  try {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (req.method === 'GET' && url.pathname === '/') return serveFile(res, path.join(WEB_ROOT, 'cookcircle-landing.html'));
   if (req.method === 'GET' && url.pathname === '/cookcircle-diet-plate.jpg') return serveFile(res, path.join(WEB_ROOT, 'cookcircle-diet-plate.jpg'));
@@ -988,6 +996,11 @@ const server = http.createServer(async (req, res) => {
     return send(res, 404, { error: 'API route not found.' });
   }
   return send(res, 404, { error: 'Not found.' });
+  } catch (error) {
+    console.error('CookCircle request failed:', error && (error.stack || error.message) || error);
+    if (!res.headersSent) return send(res, 500, { error: 'The request could not be completed. Please try again.' });
+    res.destroy();
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {

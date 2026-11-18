@@ -10,6 +10,9 @@ function toPostgres(sql) {
   let text = String(sql || '').trim();
   if (!text || /^PRAGMA\b/i.test(text)) return '';
   const ignoreInsert = /^INSERT\s+OR\s+IGNORE\s+INTO\b/i.test(text);
+  // PostgreSQL folds unquoted aliases to lowercase. Keep the camelCase row
+  // names expected by the existing route handlers (for example passwordHash).
+  text = text.replace(/\bAS\s+([A-Za-z_][A-Za-z0-9_]*)/g, (_match, alias) => `AS "${alias}"`);
   text = text.replace(/\b([a-zA-Z_][\w.]*)\s*=\s*\?\s+COLLATE\s+NOCASE\b/ig, 'lower($1) = lower(?)');
   text = text
     .replace(/\bBEGIN\s+IMMEDIATE\b/ig, 'BEGIN')
