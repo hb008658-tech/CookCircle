@@ -840,6 +840,7 @@ const server = http.createServer(async (req, res) => {
         }else sql.prepare("UPDATE cook_service_societies SET status='rejected' WHERE cook_id=?").run(row.id);
         sql.exec('COMMIT');
       }catch(e){sql.exec('ROLLBACK');return send(res,500,{error:'Could not save the cook service areas.'})}
+      if(status==='rejected')sql.prepare('UPDATE cook_profiles SET is_active=0 WHERE id=?').run(row.id);
       sql.prepare('UPDATE cook_verification_records SET status=?,reviewed_by=?,updated_at=? WHERE cook_id=? AND status IN (\'pending\',\'in review\')').run(status,user.id,new Date().toISOString(),row.id);
       sql.prepare('INSERT INTO cook_verification_records(id,cook_id,record_type,status,notes,reviewed_by,updated_at) VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),row.id,'admin review',status,String(body.notes||'').slice(0,500),user.id,new Date().toISOString());
       if(row.user_id)sql.prepare('INSERT INTO notifications(id,user_id,kind,message,created_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),row.user_id,'cook_verification',`Your cook application was ${status}.`,new Date().toISOString());
