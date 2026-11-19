@@ -931,6 +931,12 @@ const server = http.createServer(async (req, res) => {
       if (!requireRole(user,['cook'],res)) return;
       const cook=sql.prepare('SELECT id,name,verification_status AS verificationStatus,specialties FROM cook_profiles WHERE user_id=?').get(user.id);
       if(!cook)return send(res,404,{error:'Cook application not found.'});
+      if(cook.verificationStatus==='approved'){
+        const mismatched=sql.prepare(`SELECT b.id,h.society_id AS societyId FROM bookings b JOIN households h ON h.user_id=b.user_id WHERE b.cook_profile_id IS NULL AND b.status='Confirmed' AND b.payment_status IN ('simulated-paid','credit-applied') AND b.society_id<>h.society_id AND b.date>=date('now')`).all();
+        for(const booking of mismatched){sql.prepare("UPDATE bookings SET society_id=? WHERE id=? AND cook_profile_id IS NULL AND status='Confirmed'").run(booking.societyId,booking.id);sql.prepare("UPDATE booking_cook_offers SET status='expired',responded_at=? WHERE booking_id=? AND status='pending'").run(new Date().toISOString(),booking.id)}
+        const missed=sql.prepare(`SELECT b.id FROM bookings b JOIN cook_service_societies a ON a.cook_id=? AND a.society_id=b.society_id AND a.status='approved' WHERE b.cook_profile_id IS NULL AND b.status='Confirmed' AND b.payment_status IN ('simulated-paid','credit-applied') AND b.date>=date('now') AND NOT EXISTS(SELECT 1 FROM booking_cook_offers o WHERE o.booking_id=b.id AND o.cook_id=?)`).all(cook.id,cook.id);
+        for(const booking of missed)autoAssignBooking(booking.id);
+      }
       cook.serviceSocieties=sql.prepare(`SELECT s.id,s.name,s.city FROM cook_service_societies a JOIN societies s ON s.id=a.society_id WHERE a.cook_id=? AND a.status='approved' AND s.is_active=1 ORDER BY s.name`).all(cook.id);
       const bookings=sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,society.name AS societyName,
         CASE WHEN offer.status='pending' THEN 'Request pending' ELSE b.status END AS status,
@@ -1050,7 +1056,8 @@ const server = http.createServer(async (req, res) => {
       if(!requireRole(user,['customer'],res))return;
       const date = url.searchParams.get('date'); if (!dateAllowed(date)) return send(res, 400, { error: 'Choose a date within the next seven days.' });
       const day = new Date(`${date}T00:00:00`); const sameDay = new Date().toISOString().slice(0, 10) === date;
-      return send(res, 200, { date, slots: slots.map((time, i) => ({ time, available: day.getDay() !== 0 && !(sameDay && i < 3) && Boolean(findAvailableCook(user.societyId,date,time)) })) });
+      const household=sql.prepare('SELECT society_id AS societyId FROM households WHERE user_id=?').get(user.id);if(!household)return send(res,409,{error:'Your household profile needs a registered society before you can book.'});
+      return send(res, 200, { date, slots: slots.map((time, i) => ({ time, available: day.getDay() !== 0 && !(sameDay && i < 3) && Boolean(findAvailableCook(household.societyId,date,time)) })) });
     }
     if (req.method === 'GET' && url.pathname === '/api/bookings') {
       if(!requireRole(user,['customer'],res))return;
@@ -1067,13 +1074,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/bookings') {
       if(!requireRole(user,['customer'],res))return;
       let body; try { body = await getBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
-      if(!sql.prepare('SELECT id FROM societies WHERE id=? AND is_active=1').get(user.societyId))return send(res,403,{error:'Your society is no longer active on CookCircle. Contact the platform administrator.'});
+      const household=sql.prepare('SELECT society_id AS societyId FROM households WHERE user_id=?').get(user.id);if(!household)return send(res,409,{error:'Your household profile needs a registered society before you can book.'});const societyId=household.societyId;
+      if(!sql.prepare('SELECT id FROM societies WHERE id=? AND is_active=1').get(societyId))return send(res,403,{error:'Your society is no longer active on CookCircle. Contact the platform administrator.'});
       if (!dateAllowed(body.date) || !slots.includes(body.slot)) return send(res, 400, { error: 'Choose a valid available date and session.' });
-      if (new Date(`${body.date}T00:00:00`).getDay() === 0 || !findAvailableCook(user.societyId,body.date,body.slot)) return send(res, 409, { error: 'No approved cook serving your society is available for that session. Please choose another time.' });
+      if (new Date(`${body.date}T00:00:00`).getDay() === 0 || !findAvailableCook(societyId,body.date,body.slot)) return send(res, 409, { error: 'No approved cook serving your society is available for that session. Please choose another time.' });
       const meal=String(body.meal||'Meal').slice(0,40),service=sql.prepare('SELECT base_price_paise AS price FROM service_categories WHERE name=? AND active=1').get(meal);if(!service)return send(res,400,{error:'This service is currently unavailable.'});const pricePaise=service.price;let paymentStatus='unpaid-demo',status='Requested',subscriptionId=null;
       if(body.paymentMethod==='credit'){const sub=sql.prepare("SELECT id FROM subscriptions WHERE user_id=? AND status='active' AND remaining_credits>0 AND expires_at>=? ORDER BY expires_at LIMIT 1").get(user.id,new Date().toISOString());if(!sub)return send(res,400,{error:'No valid meal-pack credits are available.'});subscriptionId=sub.id;sql.prepare('UPDATE subscriptions SET remaining_credits=remaining_credits-1 WHERE id=?').run(sub.id);sql.prepare('INSERT INTO credit_ledger(id,user_id,subscription_id,change_amount,reason,created_at) VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),user.id,sub.id,-1,'Credit reserved for cooking session',new Date().toISOString());paymentStatus='credit-applied';status='Confirmed'}
       const checkinCode=String(crypto.randomInt(100000,1000000));const serviceOtpHash=crypto.createHash('sha256').update(checkinCode).digest('hex');
-      const booking = { id: `CC-${crypto.randomBytes(4).toString('hex').toUpperCase()}`, userId: user.id, societyId: user.societyId, date: body.date, slot: body.slot, meal, people: String(body.people || '').slice(0, 30), instructions: String(body.instructions || '').slice(0, 500), cook: 'Awaiting cook assignment', pricePaise, paymentStatus, status, subscriptionId, serviceOtpHash, checkinCode, createdAt: new Date().toISOString() };
+      const booking = { id: `CC-${crypto.randomBytes(4).toString('hex').toUpperCase()}`, userId: user.id, societyId, date: body.date, slot: body.slot, meal, people: String(body.people || '').slice(0, 30), instructions: String(body.instructions || '').slice(0, 500), cook: 'Awaiting cook assignment', pricePaise, paymentStatus, status, subscriptionId, serviceOtpHash, checkinCode, createdAt: new Date().toISOString() };
       insertBooking(booking);const requestCount=paymentStatus==='credit-applied'?autoAssignBooking(booking.id):null,bookingClosed=paymentStatus==='credit-applied'&&requestCount===0?closeBookingAfterAllCookDeclines(booking.id,'unavailable'):false;const saved=sql.prepare('SELECT status,cook,cook_profile_id AS cookProfileId FROM bookings WHERE id=?').get(booking.id);const assignmentMessage=bookingClosed?'No approved cook was available for this session. Your session credit has been returned.':paymentStatus==='credit-applied'?`Your request was sent to ${requestCount} approved cook${requestCount===1?'':'s'} serving your society.`:'Your booking is saved; matching cooks will receive it after payment.';return send(res, 201, { booking:{...booking,...saved,requestCount,assignmentMessage} });
     }
     return send(res, 404, { error: 'API route not found.' });
