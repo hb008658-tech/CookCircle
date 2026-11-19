@@ -11,6 +11,7 @@
     "migrate:hosted": "node migrate-sqlite-to-postgres.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "1.4.0",
     "pg": "8.23.1"
   }
 }

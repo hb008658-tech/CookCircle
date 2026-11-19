@@ -136,6 +136,26 @@ Edit the project files, then use GitHub Desktop to review, commit, and **Push
 origin**. Render automatically deploys each pushed change. The data remains in
 Supabase and is not replaced by a website code update.
 
+## Optional settings for the booking and help features
+
+These go in Render → your service → **Environment**. Never commit them to GitHub.
+
+| Variable | Needed for | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | AI help assistant | Optional and **paid** (Anthropic API usage). Without it, the Help button still answers from CookCircle's built-in help guide and says the AI assistant is not configured. |
+| `COOKCIRCLE_AI_MODEL` | AI help assistant | Optional. Defaults to `claude-opus-5-5`. Set `claude-haiku-5-5` for a much cheaper assistant. |
+| Email delivery settings (Apps Script relay, Gmail API or Resend) | Forgot password | Uses the same email settings as signup verification. If none are set, Forgot password says email is not configured. |
+
+After updating `cookcircle-gmail-relay.gs`, redeploy the Apps Script web app so
+password-reset emails get their own subject line. Until then they are still
+delivered, worded as a verification code.
+
+`COOKCIRCLE_DEV_EMAIL_OUTBOX` is for local testing only. It writes codes to a
+file instead of emailing them and is ignored when the server runs on Render.
+
+Hourly pricing (default ₹200 per hour) is set by the platform administrator
+under **Settings → Hourly pricing**. It applies to new bookings and extra time.
+
 ## Important limitations
 
 - The backend supports a small, single Render instance with Supabase Postgres.

@@ -136,6 +136,49 @@
     details TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS platform_settings (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS recurring_plans (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), society_id TEXT NOT NULL REFERENCES societies(id),
+    frequency TEXT NOT NULL, weekdays TEXT NOT NULL, slot TEXT NOT NULL, duration_minutes INTEGER NOT NULL,
+    meal TEXT NOT NULL, people TEXT NOT NULL DEFAULT '', instructions TEXT NOT NULL DEFAULT '', dishes TEXT NOT NULL DEFAULT '[]',
+    start_date TEXT NOT NULL, end_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    preferred_cook_id TEXT REFERENCES cook_profiles(id), created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS household_routines (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'custom',
+    meal TEXT NOT NULL DEFAULT 'Lunch', people TEXT NOT NULL DEFAULT '', duration_minutes INTEGER NOT NULL DEFAULT 120,
+    dishes TEXT NOT NULL DEFAULT '[]', instructions TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS household_away_periods (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, cancelled_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS booking_extensions (
+    id TEXT PRIMARY KEY, booking_id TEXT NOT NULL REFERENCES bookings(id), requested_by TEXT NOT NULL REFERENCES users(id),
+    minutes INTEGER NOT NULL, price_paise INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'requested',
+    created_at TEXT NOT NULL, responded_at TEXT
+  );
+
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS revoked_reason TEXT;
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cook_profile_id TEXT REFERENCES cook_profiles(id);
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS duration_minutes INTEGER;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS booking_type TEXT NOT NULL DEFAULT 'on_demand';
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS plan_id TEXT;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS fulfilment TEXT;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS visit_start TEXT;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS dishes TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS estimate_minutes INTEGER;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paused_for_away INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE households ADD COLUMN IF NOT EXISTS spice_level TEXT NOT NULL DEFAULT '';
+ALTER TABLE households ADD COLUMN IF NOT EXISTS oil_preference TEXT NOT NULL DEFAULT '';
+ALTER TABLE households ADD COLUMN IF NOT EXISTS regular_dishes TEXT NOT NULL DEFAULT '';
+ALTER TABLE households ADD COLUMN IF NOT EXISTS roti_requirements TEXT NOT NULL DEFAULT '';
+ALTER TABLE households ADD COLUMN IF NOT EXISTS kitchen_equipment TEXT NOT NULL DEFAULT '';
+ALTER TABLE households ADD COLUMN IF NOT EXISTS other_instructions TEXT NOT NULL DEFAULT '';
+ALTER TABLE households ADD COLUMN IF NOT EXISTS share_brief INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE households ADD COLUMN IF NOT EXISTS routines_seeded INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE cook_profiles ADD COLUMN IF NOT EXISTS preferred_language TEXT NOT NULL DEFAULT 'en';
+CREATE UNIQUE INDEX IF NOT EXISTS bookings_plan_date_active ON bookings(plan_id,date) WHERE plan_id IS NOT NULL AND paused_for_away=0;
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_unique ON users (lower(email)) WHERE email IS NOT NULL;

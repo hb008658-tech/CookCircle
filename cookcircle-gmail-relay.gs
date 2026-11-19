@@ -36,10 +36,14 @@ function doPost(e) {
     if (cache.get(cooldownKey)) return json_({ ok: false, error: 'cooldown' });
     if (MailApp.getRemainingDailyQuota() < 1) return json_({ ok: false, error: 'daily_limit' });
 
+    // Password reset codes get their own wording; every other code is a signup verification code.
+    const reset = String(input.purpose || '') === 'password_reset';
     MailApp.sendEmail(
       recipient,
-      'Your CookCircle verification code',
-      'Your CookCircle verification code is ' + code + '.\n\nThis code expires in 10 minutes. If you did not request it, ignore this email.',
+      reset ? 'Your CookCircle password reset code' : 'Your CookCircle verification code',
+      reset
+        ? 'Your CookCircle password reset code is ' + code + '.\n\nThis code expires in 10 minutes. If you did not ask to reset your password, ignore this email; your password has not changed.'
+        : 'Your CookCircle verification code is ' + code + '.\n\nThis code expires in 10 minutes. If you did not request it, ignore this email.',
       { name: 'CookCircle' }
     );
     cache.put(cooldownKey, '1', 45);
