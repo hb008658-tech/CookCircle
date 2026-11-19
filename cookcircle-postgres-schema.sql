@@ -48,6 +48,12 @@
     instructions TEXT NOT NULL DEFAULT '', cook TEXT NOT NULL, price_paise INTEGER NOT NULL,
     payment_status TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, subscription_id TEXT REFERENCES subscriptions(id), service_otp_hash TEXT
   );
+  CREATE TABLE IF NOT EXISTS booking_cook_offers (
+    booking_id TEXT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    cook_id TEXT NOT NULL REFERENCES cook_profiles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, responded_at TEXT,
+    PRIMARY KEY(booking_id,cook_id)
+  );
   CREATE INDEX IF NOT EXISTS bookings_user_date ON bookings(user_id,date);
   CREATE INDEX IF NOT EXISTS bookings_date_slot ON bookings(date,slot,status);
   CREATE TABLE IF NOT EXISTS booking_status_history (
