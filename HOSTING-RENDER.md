@@ -125,7 +125,7 @@ administrator and resets its password to the supplied value.
 4. Click **Push origin**. Render will build and deploy the pushed version.
 5. In Render, wait for the deployment to say **Live**. Open the service URL,
    then add `/api/health`. It should report `database.engine` as `PostgreSQL`,
-   `database.connected` as `true`, and build `postgres-migration-bridge-v1`.
+   `database.connected` as `true`, and build `postgres-booking-routing-v2`.
 6. Log in and check a few existing accounts, bookings, societies, cook photos,
    and admin records before inviting anyone. Your browser may require a fresh
    login because the hosted site has a different web address.

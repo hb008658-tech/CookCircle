@@ -379,10 +379,13 @@ function autoAssignBooking(bookingId) {
   const booking=sql.prepare('SELECT id,society_id AS societyId,date,slot,status,payment_status AS paymentStatus,cook_profile_id AS cookProfileId FROM bookings WHERE id=?').get(bookingId);
   if(!booking||!['simulated-paid','credit-applied'].includes(booking.paymentStatus)||booking.cookProfileId||['Cancelled','Refunded'].includes(booking.status))return null;
   const cooks=findAvailableCooks(booking.societyId,booking.date,booking.slot),now=new Date().toISOString();
-  const offer=sql.prepare("INSERT OR IGNORE INTO booking_cook_offers(booking_id,cook_id,status,created_at) VALUES(?,?,'pending',?)");
+  // Offers that expired because another cook accepted are reopened when the booking is routed again;
+  // declined or withdrawn offers stay closed so those cooks are not asked twice.
+  const offer=sql.prepare("INSERT INTO booking_cook_offers(booking_id,cook_id,status,created_at) VALUES(?,?,'pending',?) ON CONFLICT(booking_id,cook_id) DO UPDATE SET status='pending',created_at=excluded.created_at,responded_at=NULL WHERE booking_cook_offers.status='expired'");
   const notify=sql.prepare('INSERT INTO notifications(id,user_id,booking_id,kind,message,created_at) VALUES(?,?,?,?,?,?)');
-  for(const cook of cooks){const inserted=offer.run(booking.id,cook.id,now);if(inserted.changes&&cook.userId)notify.run(crypto.randomUUID(),cook.userId,booking.id,'booking_request',`New ${booking.slot} ${booking.date} booking request for a society you are approved to serve. Open your schedule to accept or decline.`,now)}
-  return cooks.length;
+  let sent=0;
+  for(const cook of cooks){const inserted=offer.run(booking.id,cook.id,now);if(inserted.changes){sent++;if(cook.userId)notify.run(crypto.randomUUID(),cook.userId,booking.id,'booking_request',`New ${booking.slot} ${booking.date} booking request for a society you are approved to serve. Open Requests to accept or decline.`,now)}}
+  return sent;
 }
 function closeBookingAfterAllCookDeclines(bookingId, outcome='declined') {
   const row=sql.prepare('SELECT user_id AS userId,subscription_id AS subscriptionId,payment_status AS paymentStatus FROM bookings WHERE id=? AND cook_profile_id IS NULL AND status=\'Confirmed\'').get(bookingId);
@@ -411,6 +414,31 @@ function closeBookingAfterAllCookDeclines(bookingId, outcome='declined') {
   sql.prepare('INSERT INTO notifications(id,user_id,booking_id,kind,message,created_at) VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),row.userId,bookingId,'booking_status',apology,now);
   return true;
 }
+// Expire a cook's unanswered requests (optionally for one session) and close any request no other cook can still take.
+function withdrawPendingOffersForCook(cookId,date=null,slot=null){
+  const rows=date
+    ?sql.prepare("SELECT o.booking_id AS bookingId FROM booking_cook_offers o JOIN bookings b ON b.id=o.booking_id WHERE o.cook_id=? AND o.status='pending' AND b.date=? AND b.slot=?").all(cookId,date,slot)
+    :sql.prepare("SELECT booking_id AS bookingId FROM booking_cook_offers WHERE cook_id=? AND status='pending'").all(cookId);
+  const now=new Date().toISOString();
+  for(const {bookingId} of rows){
+    sql.prepare("UPDATE booking_cook_offers SET status='expired',responded_at=? WHERE booking_id=? AND cook_id=? AND status='pending'").run(now,bookingId,cookId);
+    closeBookingAfterAllCookDeclines(bookingId,'unavailable');
+  }
+  return rows.length;
+}
+// Release a booking the assigned cook can no longer serve and send it to the other eligible cooks.
+function reopenBookingForOtherCooks(bookingId,cookId,note){
+  const now=new Date().toISOString();
+  const reopened=sql.prepare("UPDATE bookings SET status='Confirmed',cook='Awaiting cook assignment',cook_profile_id=NULL WHERE id=? AND cook_profile_id=? AND status IN ('Cook assigned','Replacement confirmed','Cook en route')").run(bookingId,cookId);
+  if(!reopened.changes)return false;
+  sql.prepare("INSERT OR IGNORE INTO booking_cook_offers(booking_id,cook_id,status,created_at) VALUES(?,?,'withdrawn',?)").run(bookingId,cookId,now);
+  sql.prepare("UPDATE booking_cook_offers SET status='withdrawn',responded_at=? WHERE booking_id=? AND cook_id=?").run(now,bookingId,cookId);
+  sql.prepare('INSERT INTO booking_status_history(id,booking_id,status,note,created_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),bookingId,'Confirmed',note,now);
+  const row=sql.prepare('SELECT user_id AS userId FROM bookings WHERE id=?').get(bookingId);
+  if(row)sql.prepare('INSERT INTO notifications(id,user_id,booking_id,kind,message,created_at) VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),row.userId,bookingId,'booking_status','Your assigned cook can no longer make this session. We are asking other approved cooks in your society.',now);
+  if(!autoAssignBooking(bookingId))closeBookingAfterAllCookDeclines(bookingId,'unavailable');
+  return true;
+}
 const legacyAutoAssignments=sql.prepare(`SELECT b.id FROM bookings b
   WHERE b.status='Cook assigned' AND b.cook_profile_id IS NOT NULL
     AND b.payment_status IN ('simulated-paid','credit-applied') AND b.date>=?
@@ -421,7 +449,7 @@ for(const booking of legacyAutoAssignments){
   const reopened=sql.prepare("UPDATE bookings SET status='Confirmed',cook='Awaiting cook assignment',cook_profile_id=NULL WHERE id=? AND status='Cook assigned'").run(booking.id);
   if(reopened.changes){const now=new Date().toISOString();sql.prepare('INSERT INTO booking_status_history(id,booking_id,status,note,created_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),booking.id,'Confirmed','Reopened as a cook request; previous assignment was automatic',now);autoAssignBooking(booking.id)}
 }
-for(const booking of sql.prepare("SELECT id FROM bookings WHERE cook_profile_id IS NULL AND payment_status IN ('simulated-paid','credit-applied') AND status='Confirmed' ORDER BY created_at").all())autoAssignBooking(booking.id);
+for(const booking of sql.prepare("SELECT id FROM bookings WHERE cook_profile_id IS NULL AND payment_status IN ('simulated-paid','credit-applied') AND status='Confirmed' ORDER BY created_at").all()){if(!autoAssignBooking(booking.id))closeBookingAfterAllCookDeclines(booking.id,'unavailable')}
 
 // Create or reset a platform administrator only when credentials are supplied in the environment.
 if (process.env.COOKCIRCLE_ADMIN_EMAIL && process.env.COOKCIRCLE_ADMIN_PASSWORD) {
@@ -652,7 +680,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/admin-legumes-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'admin-legumes-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/household-dried-fruit-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'household-dried-fruit-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/cook-workspace-vegetables-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'cook-workspace-vegetables-background.jpg'));
-  if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, service: 'CookCircle MVP API', build: USE_POSTGRES ? 'postgres-migration-bridge-v1' : 'sqlite-dynamic-stakeholders-v1', database: { engine: USE_POSTGRES ? 'PostgreSQL' : 'SQLite', connected: sql.prepare('SELECT 1 AS ok').get().ok === 1, persistent: true, ...(USE_POSTGRES ? {} : { file: path.basename(DB_FILE) }) }, features: { dynamicPersistentDatabase: true, bookingCheckinCodeInHouseholdBookings: true, publicHelpRequests: true, resolvedHelpRequestClear: true, emailSignupVerification: true, mobileSignupVerification: false, cookSignupWithoutResidence: true, cookDefaultAvatars: true, profilePhotoCrop: true, alphanumericCaptcha: true, caseSensitiveMixedCaptcha: true, dietPlateImage: true, vegetableBackground: true, societyRegistrationReview: true, adminPasswordReset: true, existingAdminPromotion: true, cookAndSocietyRemoval: true, adminBackground: true, permanentAdminDeletes: true, societySessionRevocation: true, removedCookCashoutOnly: true } });
+  if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, service: 'CookCircle MVP API', build: USE_POSTGRES ? 'postgres-booking-routing-v2' : 'sqlite-booking-routing-v2', database: { engine: USE_POSTGRES ? 'PostgreSQL' : 'SQLite', connected: sql.prepare('SELECT 1 AS ok').get().ok === 1, persistent: true, ...(USE_POSTGRES ? {} : { file: path.basename(DB_FILE) }) }, features: { dynamicPersistentDatabase: true, bookingCheckinCodeInHouseholdBookings: true, publicHelpRequests: true, resolvedHelpRequestClear: true, emailSignupVerification: true, mobileSignupVerification: false, cookSignupWithoutResidence: true, cookDefaultAvatars: true, profilePhotoCrop: true, alphanumericCaptcha: true, caseSensitiveMixedCaptcha: true, dietPlateImage: true, vegetableBackground: true, societyRegistrationReview: true, adminPasswordReset: true, existingAdminPromotion: true, cookAndSocietyRemoval: true, adminBackground: true, permanentAdminDeletes: true, societySessionRevocation: true, removedCookCashoutOnly: true } });
   if (req.method === 'GET' && url.pathname === '/api/societies') return send(res, 200, { societies: db.societies });
   if (req.method === 'GET' && url.pathname === '/api/services') return send(res,200,{services:sql.prepare('SELECT id,name,duration_minutes AS durationMinutes,base_price_paise AS pricePaise FROM service_categories WHERE active=1 ORDER BY name').all()});
 
@@ -729,7 +757,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.endsWith('/signup')) {
       const name = String(body.name || '').trim(), role = String(body.role || 'customer'), householdName = role === 'customer' ? String(body.householdName || '').trim().slice(0,80) : ''; let societyId = String(body.societyId || '');
       let apartment = String(body.apartment || '').trim(), address='', phone='', householdPhone=null, yearsExperience=0, encryptedDocs=[],serviceSocietyIds=[];
-      if (!['customer','cook','society_admin'].includes(role)) return send(res, 403, { error: 'Platform administrator accounts must be configured by the operator.' });
+      if (!['customer','cook'].includes(role)) return send(res, 403, { error: 'Administrator accounts must be configured by the operator.' });
       const verificationToken=String(body.verificationToken||''),verificationChannel=String(body.verificationChannel||''),verificationProof=signupVerificationProofs.get(verificationToken);
       const verificationDestination=verificationChannel==='email'?email:'';
       if(!verificationProof||verificationProof.expiresAt<Date.now()||verificationProof.channel!=='email'||verificationChannel!=='email'||verificationProof.destination!==verificationDestination)return send(res,400,{error:'Verify your email address before creating your account.'});
@@ -804,17 +832,6 @@ const server = http.createServer(async (req, res) => {
       if (!requireRole(user,['platform_admin'],res)) return;
       return send(res,200,{bookings:sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,b.status,b.society_id AS societyId,b.payment_status AS paymentStatus,b.price_paise AS pricePaise,u.name AS household,u.apartment,s.name AS society,b.cook,c.name AS assignedCookName FROM bookings b JOIN users u ON u.id=b.user_id JOIN societies s ON s.id=b.society_id LEFT JOIN cook_profiles c ON c.id=b.cook_profile_id ORDER BY b.date DESC,b.slot`).all()});
     }
-    const adminBooking=url.pathname.match(/^\/api\/admin\/bookings\/([^/]+)$/);
-    if (req.method === 'PATCH' && adminBooking) {
-      if (!requireRole(user,['platform_admin'],res)) return;
-      let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
-      const allowed=['Requested','Confirmed','Cook assigned','Backup required','Replacement confirmed','Cook en route','Checked in','In progress','Completed','Cancelled','Refund pending','Refunded','No-show','No cook available'];
-      const row=sql.prepare('SELECT id,status,society_id AS societyId,date,slot,payment_status AS paymentStatus FROM bookings WHERE id=?').get(adminBooking[1]);if(!row)return send(res,404,{error:'Booking not found.'});
-      let status=String(body.status||'');if(body.cookProfileId){if(!['simulated-paid','credit-applied'].includes(row.paymentStatus))return send(res,400,{error:'The booking must be paid or use a session credit before cook assignment.'});const cook=sql.prepare(`SELECT c.id FROM cook_profiles c JOIN cook_service_societies area ON area.cook_id=c.id AND area.society_id=? AND area.status='approved' JOIN societies s ON s.id=area.society_id AND s.is_active=1 WHERE c.id=? AND c.verification_status='approved' AND c.is_active=1 AND NOT EXISTS(SELECT 1 FROM bookings b WHERE b.cook_profile_id=c.id AND b.date=? AND b.slot=? AND b.status NOT IN ('Cancelled','Refunded')) AND NOT EXISTS(SELECT 1 FROM cook_availability a WHERE a.cook_id=c.id AND a.date=? AND a.slot=? AND a.available=0)`).get(row.societyId,body.cookProfileId,row.date,row.slot,row.date,row.slot);if(!cook)return send(res,400,{error:'Choose an available, approved cook who serves this society.'});status=row.status==='Backup required'?'Replacement confirmed':'Cook assigned';}
-      if(!allowed.includes(status))return send(res,400,{error:'Choose a valid booking status.'});
-      setBookingStatus(row.id,status,'Updated by platform administrator',body.cookProfileId||null);logAdmin(user,'booking_updated','booking',row.id,status);
-      return send(res,200,{ok:true});
-    }
     if (req.method === 'GET' && url.pathname === '/api/admin/cooks') {
       if (!requireRole(user,['platform_admin'],res)) return;
       const cooks=sql.prepare(`SELECT c.id,c.name,c.society_id AS societyId,sc.name AS serviceSocietyName,c.verification_status AS verificationStatus,c.is_active AS isActive,c.specialties,c.address_encrypted AS addressEncrypted,c.address_nonce AS addressNonce,c.address_tag AS addressTag,c.phone_encrypted AS phoneEncrypted,c.phone_nonce AS phoneNonce,c.phone_tag AS phoneTag,c.years_experience AS yearsExperience,c.is_demo AS isDemo,u.email FROM cook_profiles c LEFT JOIN users u ON u.id=c.user_id LEFT JOIN societies sc ON sc.id=c.society_id ORDER BY c.is_demo,c.name`).all().map(c=>({...c,address:decryptSensitiveText(c.addressEncrypted,c.addressNonce,c.addressTag),phone:decryptSensitiveText(c.phoneEncrypted,c.phoneNonce,c.phoneTag),serviceSocieties:sql.prepare(`SELECT ss.id,ss.name,ss.city,a.status FROM cook_service_societies a JOIN societies ss ON ss.id=a.society_id WHERE a.cook_id=? ORDER BY ss.name`).all(c.id)}));
@@ -847,6 +864,8 @@ const server = http.createServer(async (req, res) => {
       if(!['pending','application received','in review'].includes(String(row.verification_status||'').toLowerCase()))return send(res,409,{error:'This cook request has already been reviewed.'});
       const submittedSocietyIds=Array.isArray(body.societyIds)?body.societyIds:(body.societyId?[body.societyId]:[]);const selectedAtSignup=status==='approved'&&submittedSocietyIds.length===0?sql.prepare("SELECT society_id AS societyId FROM cook_service_societies WHERE cook_id=? AND status='pending' ORDER BY society_id").all(row.id).map(item=>item.societyId):submittedSocietyIds;const serviceSocietyIds=status==='approved'?[...new Set(selectedAtSignup.map(x=>String(x||'').trim()).filter(Boolean))]:[];
       if(status==='approved'&&(!serviceSocietyIds.length||serviceSocietyIds.length>20))return send(res,400,{error:'Select at least one nearby society to approve for this cook.'});
+      const signupSocietyIds=new Set(sql.prepare('SELECT society_id AS societyId FROM cook_service_societies WHERE cook_id=?').all(row.id).map(item=>item.societyId));
+      if(status==='approved'&&serviceSocietyIds.some(id=>!signupSocietyIds.has(id)))return send(res,400,{error:'Approve only the societies this cook selected at signup.'});
       if(status==='approved'){const active=sql.prepare(`SELECT id FROM societies WHERE is_active=1 AND id IN (${serviceSocietyIds.map(()=>'?').join(',')})`).all(...serviceSocietyIds);if(active.length!==serviceSocietyIds.length)return send(res,400,{error:'Choose only active societies from the service-area list.'});}
       sql.exec('BEGIN IMMEDIATE');try{
         const updated=sql.prepare("UPDATE cook_profiles SET verification_status=?,society_id=? WHERE id=? AND lower(verification_status) IN ('pending','application received','in review')").run(status,status==='approved'?serviceSocietyIds[0]:null,row.id);
@@ -897,7 +916,7 @@ const server = http.createServer(async (req, res) => {
       queueAdminDirectorySync();return send(res,200,{ok:true});
     }
     const adminCookActive=url.pathname.match(/^\/api\/admin\/cooks\/([^/]+)\/active$/);
-    if(req.method==='PATCH'&&adminCookActive){if(!requireRole(user,['platform_admin'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}if(typeof body.active!=='boolean')return send(res,400,{error:'Choose whether to remove or restore this cook.'});const result=sql.prepare('UPDATE cook_profiles SET is_active=? WHERE id=?').run(body.active?1:0,adminCookActive[1]);if(!result.changes)return send(res,404,{error:'Cook not found.'});logAdmin(user,body.active?'cook_restored':'cook_removed','cook',adminCookActive[1],body.active?'active':'removed from new bookings');queueAdminDirectorySync();return send(res,200,{ok:true,active:body.active});}
+    if(req.method==='PATCH'&&adminCookActive){if(!requireRole(user,['platform_admin'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}if(typeof body.active!=='boolean')return send(res,400,{error:'Choose whether to remove or restore this cook.'});const result=sql.prepare('UPDATE cook_profiles SET is_active=? WHERE id=?').run(body.active?1:0,adminCookActive[1]);if(!result.changes)return send(res,404,{error:'Cook not found.'});if(!body.active){withdrawPendingOffersForCook(adminCookActive[1]);for(const booking of sql.prepare("SELECT id FROM bookings WHERE cook_profile_id=? AND status IN ('Cook assigned','Replacement confirmed','Cook en route') AND date>=?").all(adminCookActive[1],new Date().toISOString().slice(0,10)))reopenBookingForOtherCooks(booking.id,adminCookActive[1],'Assigned cook was removed by the platform administrator')}logAdmin(user,body.active?'cook_restored':'cook_removed','cook',adminCookActive[1],body.active?'active':'removed from new bookings');queueAdminDirectorySync();return send(res,200,{ok:true,active:body.active});}
     if (req.method === 'GET' && url.pathname === '/api/admin/complaints') {
       if (!requireRole(user,['platform_admin'],res)) return;
       return send(res,200,{complaints:sql.prepare(`SELECT c.id,c.category,c.details,c.status,c.created_at AS createdAt,u.name AS customer,b.id AS bookingId FROM complaints c JOIN users u ON u.id=c.user_id LEFT JOIN bookings b ON b.id=c.booking_id ORDER BY c.created_at DESC`).all()});
@@ -969,7 +988,11 @@ const server = http.createServer(async (req, res) => {
       if(typeof body.active!=='boolean')return send(res,400,{error:'Choose whether to remove or restore this society.'});
       const result=sql.prepare('UPDATE societies SET is_active=? WHERE id=?').run(body.active?1:0,adminSocietyActive[1]);
       if(!result.changes)return send(res,404,{error:'Society not found.'});
-      if(!body.active)sql.prepare("UPDATE sessions SET revoked_reason='society_removed' WHERE user_id IN (SELECT id FROM users WHERE society_id=?)").run(adminSocietyActive[1]);
+      if(!body.active){
+        sql.prepare("UPDATE sessions SET revoked_reason='society_removed' WHERE user_id IN (SELECT id FROM users WHERE society_id=?)").run(adminSocietyActive[1]);
+        const now=new Date().toISOString();
+        for(const booking of sql.prepare("SELECT id FROM bookings WHERE society_id=? AND cook_profile_id IS NULL AND status='Confirmed'").all(adminSocietyActive[1])){sql.prepare("UPDATE booking_cook_offers SET status='expired',responded_at=? WHERE booking_id=? AND status='pending'").run(now,booking.id);closeBookingAfterAllCookDeclines(booking.id,'unavailable')}
+      }
       logAdmin(user,body.active?'society_restored':'society_removed','society',adminSocietyActive[1],body.active?'active':'removed from new registrations; user sessions revoked');
       queueAdminDirectorySync();
       return send(res,200,{ok:true,active:body.active});
@@ -1056,7 +1079,7 @@ const server = http.createServer(async (req, res) => {
     }
     if(req.method==='PUT'&&url.pathname==='/api/cook/availability'){
       if(!requireRole(user,['cook'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}const cook=sql.prepare('SELECT id FROM cook_profiles WHERE user_id=?').get(user.id);if(!cook)return send(res,404,{error:'Cook profile not found.'});if(!dateAllowed(body.date)||!slots.includes(body.slot))return send(res,400,{error:'Choose a valid date and session.'});if(sql.prepare("SELECT 1 FROM bookings WHERE cook_profile_id=? AND date=? AND slot=? AND status NOT IN ('Cancelled','Refunded')").get(cook.id,body.date,body.slot))return send(res,409,{error:'This session already has an assigned visit.'});
-      sql.prepare('INSERT INTO cook_availability(id,cook_id,date,slot,available) VALUES(?,?,?,?,?) ON CONFLICT(cook_id,date,slot) DO UPDATE SET available=excluded.available').run(crypto.randomUUID(),cook.id,body.date,body.slot,body.available?1:0);return send(res,200,{ok:true});
+      sql.prepare('INSERT INTO cook_availability(id,cook_id,date,slot,available) VALUES(?,?,?,?,?) ON CONFLICT(cook_id,date,slot) DO UPDATE SET available=excluded.available').run(crypto.randomUUID(),cook.id,body.date,body.slot,body.available?1:0);if(!body.available)withdrawPendingOffersForCook(cook.id,body.date,body.slot);return send(res,200,{ok:true});
     }
     const cookBooking=url.pathname.match(/^\/api\/cook\/bookings\/([^/]+)\/status$/);
     if(req.method==='POST'&&cookBooking){
@@ -1085,7 +1108,7 @@ const server = http.createServer(async (req, res) => {
           const claimed=sql.prepare("UPDATE bookings SET status='Cook assigned',cook=?,cook_profile_id=? WHERE id=? AND cook_profile_id IS NULL AND status='Confirmed'").run(`Cook · ${cook.name}`,cook.id,booking.id);
           if(!claimed.changes)return send(res,409,{error:'Another cook has already accepted this request.'});
           sql.prepare("UPDATE booking_cook_offers SET status=CASE WHEN cook_id=? THEN 'accepted' ELSE 'expired' END,responded_at=? WHERE booking_id=? AND status='pending'").run(cook.id,now,booking.id);
-          sql.prepare("UPDATE booking_cook_offers SET status='expired',responded_at=? WHERE cook_id=? AND status='pending' AND booking_id IN (SELECT id FROM bookings WHERE date=? AND slot=? AND cook_profile_id IS NULL)").run(now,cook.id,booking.date,booking.slot);
+          withdrawPendingOffersForCook(cook.id,booking.date,booking.slot);
           sql.prepare('INSERT INTO booking_status_history(id,booking_id,status,note,created_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),booking.id,'Cook assigned','Accepted by cook',now);
           sql.prepare('INSERT INTO notifications(id,user_id,booking_id,kind,message,created_at) VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),booking.user_id,booking.id,'booking_status',`Booking accepted by ${cook.name}.`,now);
           return send(res,200,{ok:true,accepted:true});
@@ -1093,7 +1116,17 @@ const server = http.createServer(async (req, res) => {
         if(body.action==='reject')return send(res,404,{error:'This request is no longer available.'});
         if(booking.status!=='Confirmed'||booking.cookProfileId!==cook.id)return send(res,409,{error:'This booking is no longer available.'});setBookingStatus(booking.id,'Cook assigned','Accepted by cook',cook.id);
       }
-      else{const owned=sql.prepare('SELECT id FROM bookings WHERE id=? AND cook_profile_id=?').get(booking.id,cook.id);if(!owned)return send(res,403,{error:'This booking is not assigned to you.'});if(body.action==='checkin'){const supplied=crypto.createHash('sha256').update(String(body.otp||'')).digest('hex');if(!booking.otpHash||!crypto.timingSafeEqual(Buffer.from(supplied,'hex'),Buffer.from(booking.otpHash,'hex')))return send(res,400,{error:'The customer check-in code is incorrect.'})}const next=transition[0];setBookingStatus(booking.id,next,'Cook updated the service status');if(body.action==='unavailable')sql.prepare('INSERT INTO backup_assignments(id,booking_id,primary_cook_id,status,created_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),booking.id,cook.id,'needed',new Date().toISOString())}
+      else{const owned=sql.prepare('SELECT id FROM bookings WHERE id=? AND cook_profile_id=?').get(booking.id,cook.id);if(!owned)return send(res,403,{error:'This booking is not assigned to you.'});
+        const allowedFrom={enroute:['Cook assigned','Replacement confirmed'],checkin:['Cook assigned','Replacement confirmed','Cook en route'],start:['Checked in'],complete:['In progress'],unavailable:['Cook assigned','Replacement confirmed','Cook en route']};
+        if(!allowedFrom[body.action].includes(booking.status))return send(res,409,{error:`This booking is ${booking.status}; that update is not available now.`});
+        if(body.action==='unavailable'){
+          const now=new Date().toISOString();
+          sql.prepare('INSERT INTO backup_assignments(id,booking_id,primary_cook_id,status,created_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),booking.id,cook.id,'needed',now);
+          sql.prepare('INSERT INTO cook_availability(id,cook_id,date,slot,available) VALUES(?,?,?,?,0) ON CONFLICT(cook_id,date,slot) DO UPDATE SET available=0').run(crypto.randomUUID(),cook.id,booking.date,booking.slot);
+          reopenBookingForOtherCooks(booking.id,cook.id,'Assigned cook reported unavailable');
+          return send(res,200,{ok:true,rerouted:true});
+        }
+        if(body.action==='checkin'){const supplied=crypto.createHash('sha256').update(String(body.otp||'')).digest('hex');if(!booking.otpHash||!crypto.timingSafeEqual(Buffer.from(supplied,'hex'),Buffer.from(booking.otpHash,'hex')))return send(res,400,{error:'The customer check-in code is incorrect.'})}const next=transition[0];setBookingStatus(booking.id,next,'Cook updated the service status')}
       return send(res,200,{ok:true});
     }
     if (req.method === 'GET' && url.pathname === '/api/profile') {
@@ -1134,7 +1167,7 @@ const server = http.createServer(async (req, res) => {
       if(!requireRole(user,['customer'],res))return;const [_,id,action]=customerBooking;const booking=sql.prepare('SELECT * FROM bookings WHERE id=? AND user_id=?').get(id,user.id);if(!booking)return send(res,404,{error:'Booking not found.'});
       let body={};try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
       if(action==='cancel'){if(['Completed','Cancelled','Refunded','No cook available'].includes(booking.status))return send(res,409,{error:'This booking can no longer be cancelled.'});if(booking.payment_status==='credit-applied'&&booking.subscription_id){sql.prepare('UPDATE subscriptions SET remaining_credits=remaining_credits+1 WHERE id=?').run(booking.subscription_id);sql.prepare('INSERT INTO credit_ledger(id,user_id,booking_id,subscription_id,change_amount,reason,created_at) VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),user.id,id,booking.subscription_id,1,'Cancelled booking credit returned',new Date().toISOString())}setBookingStatus(id,'Cancelled','Cancelled by customer');const pay=sql.prepare("SELECT id,amount_paise FROM payments WHERE booking_id=? AND status='simulated-paid'").get(id);if(pay){sql.prepare("UPDATE payments SET status='refund-pending' WHERE id=?").run(pay.id);sql.prepare('INSERT INTO refunds(id,payment_id,amount_paise,status,reason,created_at) VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),pay.id,pay.amount_paise,'pending','Customer cancellation in demo mode',new Date().toISOString())}return send(res,200,{ok:true,refundPolicy:'Demo cancellation; no real payment was collected.'})}
-            if(action==='pay'){if(booking.payment_status!=='unpaid-demo')return send(res,409,{error:'This booking has already been paid or confirmed.'});sql.prepare("UPDATE bookings SET payment_status='simulated-paid' WHERE id=?").run(id);sql.prepare("UPDATE payments SET status='simulated-paid',provider_reference=? WHERE booking_id=?").run(`SIM-${crypto.randomUUID()}`,id);setBookingStatus(id,'Confirmed','Simulated payment successful');const requestCount=autoAssignBooking(id),bookingClosed=requestCount===0?closeBookingAfterAllCookDeclines(id,'unavailable'):false;return send(res,200,{ok:true,simulated:true,requestsSent:requestCount,bookingClosed,message:bookingClosed?'No approved cook was available for this session. The demo payment has been marked for refund.':''})}
+            if(action==='pay'){if(booking.payment_status!=='unpaid-demo')return send(res,409,{error:'This booking has already been paid or confirmed.'});if(booking.status!=='Requested')return send(res,409,{error:'This booking is no longer open for payment.'});if(!dateAllowed(booking.date))return send(res,409,{error:'This session date has passed. Please book a new session.'});if(!sql.prepare('SELECT id FROM societies WHERE id=? AND is_active=1').get(booking.society_id))return send(res,403,{error:'Your society is no longer active on CookCircle. Contact the platform administrator.'});sql.prepare("UPDATE bookings SET payment_status='simulated-paid' WHERE id=?").run(id);sql.prepare("UPDATE payments SET status='simulated-paid',provider_reference=? WHERE booking_id=?").run(`SIM-${crypto.randomUUID()}`,id);setBookingStatus(id,'Confirmed','Simulated payment successful');const requestCount=autoAssignBooking(id),bookingClosed=requestCount===0?closeBookingAfterAllCookDeclines(id,'unavailable'):false;return send(res,200,{ok:true,simulated:true,requestsSent:requestCount,bookingClosed,message:bookingClosed?'No approved cook was available for this session. The demo payment has been marked for refund.':''})}
       if(action==='review'){if(booking.status!=='Completed')return send(res,409,{error:'You can review a booking after service completion.'});const rating=Math.max(1,Math.min(5,Number(body.rating)||0));try{sql.prepare('INSERT INTO reviews(id,booking_id,user_id,cook_id,rating,comment,created_at) VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),id,user.id,booking.cook_profile_id,rating,String(body.comment||'').slice(0,1000),new Date().toISOString());return send(res,201,{ok:true})}catch{return send(res,409,{error:'A review already exists for this booking.'})}}
     }
     if (req.method === 'GET' && url.pathname === '/api/me') { const profile=user.role==='cook'?sql.prepare('SELECT is_active AS isActive FROM cook_profiles WHERE user_id=?').get(user.id):null; return send(res,200,{user:{...cleanUser(user),...(user.role==='cook'?{cookRemoved:!profile||!profile.isActive}:{})}}); }
@@ -1148,7 +1181,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/bookings') {
       if(!requireRole(user,['customer'],res))return;
       const codeRows=sql.prepare("SELECT booking_id AS bookingId,message FROM notifications WHERE user_id=? AND kind='booking_requested' AND booking_id IS NOT NULL").all(user.id);
-      const checkinCodes=new Map(codeRows.map(n=>[n.bookingId,(String(n.message||'').match(/check-in code is (\d{6})/)||[])[1]||'']));
+      const checkinCodes=new Map(codeRows.map(n=>[n.bookingId,(String(n.message||'').match(/check-in code(?: is|:)\s*(\d{6})/)||[])[1]||'']));
       const bookings = sql.prepare(`SELECT b.id,b.user_id AS userId,b.society_id AS societyId,b.date,b.slot,b.meal,b.people,b.instructions,b.cook,b.price_paise AS pricePaise,b.payment_status AS paymentStatus,b.status,b.created_at AS createdAt,b.subscription_id AS subscriptionId,b.cook_profile_id AS cookProfileId,c.name AS assignedCookName,c.phone AS legacyCookPhone,c.phone_encrypted AS cookPhoneEncrypted,c.phone_nonce AS cookPhoneNonce,c.phone_tag AS cookPhoneTag FROM bookings b LEFT JOIN cook_profiles c ON c.id=b.cook_profile_id WHERE b.user_id=? ORDER BY b.date,b.slot`).all(user.id).map(b=>{
         const {legacyCookPhone,cookPhoneEncrypted,cookPhoneNonce,cookPhoneTag,assignedCookName,...booking}=b;
         const mayContactCook=Boolean(b.cookProfileId)&&!['Cancelled','Refunded'].includes(b.status);let cookPhone='';

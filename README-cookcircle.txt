@@ -51,7 +51,7 @@ changed, stored cook documents and contact details cannot be decrypted. Do not
 paste the key into chat or share it with applicants.
 
 After restarting, open http://localhost:3000/api/health. The current server
-should include build "sqlite-dynamic-stakeholders-v1" and
+should include build "sqlite-booking-routing-v2" and
 `database.connected: true`. If those are missing, an older server process is
 still using port 3000 or the server was started from a different folder.
 
