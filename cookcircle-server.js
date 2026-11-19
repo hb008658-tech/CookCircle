@@ -289,7 +289,7 @@ function insertUser(u) {
   if (u.role === 'cook') {
     const address=encryptSensitiveText(u.address),phone=encryptSensitiveText(u.phone);
     sql.prepare('INSERT INTO cook_profiles(id,user_id,name,society_id,verification_status,years_experience,address_encrypted,address_nonce,address_tag,phone_encrypted,phone_nonce,phone_tag,is_demo) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)')
-      .run(crypto.randomUUID(),u.id,u.name,u.societyId,'application received',u.yearsExperience,address.encrypted,address.nonce,address.authTag,phone.encrypted,phone.nonce,phone.authTag);
+      .run(crypto.randomUUID(),u.id,u.name,u.societyId,'application received',Number(u.yearsExperience ?? 0),address.encrypted,address.nonce,address.authTag,phone.encrypted,phone.nonce,phone.authTag);
     queueAdminDirectorySync();
   }
 }
