@@ -289,7 +289,7 @@ function insertUser(u) {
   if (u.role === 'cook') {
     const address=encryptSensitiveText(u.address),phone=encryptSensitiveText(u.phone);
     sql.prepare('INSERT INTO cook_profiles(id,user_id,name,society_id,verification_status,years_experience,address_encrypted,address_nonce,address_tag,phone_encrypted,phone_nonce,phone_tag,is_demo) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)')
-      .run(crypto.randomUUID(),u.id,u.name,u.societyId,'application received',u.yearsExperience,address.encrypted,address.nonce,address.authTag,phone.encrypted,phone.nonce,phone.authTag);
+      .run(crypto.randomUUID(),u.id,u.name,u.societyId,'application received',Number(u.yearsExperience ?? 0),address.encrypted,address.nonce,address.authTag,phone.encrypted,phone.nonce,phone.authTag);
     queueAdminDirectorySync();
   }
 }
@@ -785,7 +785,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/admin/bookings') {
       if (!requireRole(user,['platform_admin'],res)) return;
-      return send(res,200,{bookings:sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,b.status,b.society_id AS societyId,b.payment_status AS paymentStatus,b.price_paise AS pricePaise,u.name AS household,u.apartment,s.name AS society,b.cook FROM bookings b JOIN users u ON u.id=b.user_id JOIN societies s ON s.id=b.society_id ORDER BY b.date DESC,b.slot`).all()});
+      return send(res,200,{bookings:sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,b.status,b.society_id AS societyId,b.payment_status AS paymentStatus,b.price_paise AS pricePaise,u.name AS household,u.apartment,s.name AS society,b.cook,c.name AS assignedCookName FROM bookings b JOIN users u ON u.id=b.user_id JOIN societies s ON s.id=b.society_id LEFT JOIN cook_profiles c ON c.id=b.cook_profile_id ORDER BY b.date DESC,b.slot`).all()});
     }
     const adminBooking=url.pathname.match(/^\/api\/admin\/bookings\/([^/]+)$/);
     if (req.method === 'PATCH' && adminBooking) {
@@ -840,6 +840,7 @@ const server = http.createServer(async (req, res) => {
         }else sql.prepare("UPDATE cook_service_societies SET status='rejected' WHERE cook_id=?").run(row.id);
         sql.exec('COMMIT');
       }catch(e){sql.exec('ROLLBACK');return send(res,500,{error:'Could not save the cook service areas.'})}
+      if(status==='rejected')sql.prepare('UPDATE cook_profiles SET is_active=0 WHERE id=?').run(row.id);
       sql.prepare('UPDATE cook_verification_records SET status=?,reviewed_by=?,updated_at=? WHERE cook_id=? AND status IN (\'pending\',\'in review\')').run(status,user.id,new Date().toISOString(),row.id);
       sql.prepare('INSERT INTO cook_verification_records(id,cook_id,record_type,status,notes,reviewed_by,updated_at) VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),row.id,'admin review',status,String(body.notes||'').slice(0,500),user.id,new Date().toISOString());
       if(row.user_id)sql.prepare('INSERT INTO notifications(id,user_id,kind,message,created_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),row.user_id,'cook_verification',`Your cook application was ${status}.`,new Date().toISOString());
