@@ -4,9 +4,9 @@ The CookCircle admin page now links to this private Google Sheet:
 
 https://docs.google.com/spreadsheets/d/1RObGhw51s9tLHVMq4Qlvay-8QCGH_FG_8H1t4RoVdzs/edit
 
-It has two tabs: **Cooks** and **Societies**. The backend is prepared to send a fresh snapshot after cook or society signup, profile/review changes, removal, restoration, and permanent deletion. The admin page also has a **Sync now** button.
+It has three tabs: **Cooks**, **Societies**, and **Households**. The backend is prepared to send a fresh snapshot after cook signup/profile/review changes, household signup/profile changes, society changes, removals, restorations, and permanent deletions. The admin page also has a **Sync now** button.
 
-The sheet intentionally excludes email addresses, phone numbers, home addresses, passwords, identity documents, and payment details. Removed-but-retained records show `Active = No`; a permanently deleted cook or society disappears on the next sync. The sheet remains private to its owner unless you explicitly share it with named admins.
+The sheet includes cook mobile numbers and household email addresses. Cook phone numbers are decrypted from the encrypted cook profile for this private admin sheet. Household phone numbers are not stored as recoverable values in the website database, so their Sheet cells are blank; the database only keeps a one-way phone verification hash. Apartment numbers, addresses, identity documents, passwords, and payment details are excluded. Removed cooks and societies show `Active = No`; a permanently deleted cook, society, or household disappears on the next sync. The sheet remains private to its owner unless you explicitly share it with named admins.
 
 ## Finish connecting live sync
 
@@ -23,7 +23,7 @@ The private Sheet and Apps Script project are already created. The script code a
 
    Save the changes. Render will restart/redeploy the service.
 4. Wait for the service to finish redeploying.
-5. Sign in as admin, open **Cook and society sheet**, and click **Sync now**. The first sync fills both tabs from the hosted database. After that, backend changes keep the tabs current.
+5. Sign in as admin, open **Cook, society and household sheet**, and click **Sync now**. The first sync fills all three tabs from the hosted database. After that, backend changes keep the tabs current.
 
 If you make a new Apps Script deployment later, update `COOKCIRCLE_SHEETS_SYNC_URL` in Render to the new Web app URL. Do not enable public sharing on the Sheet itself; anyone opening the Sheet link must still be signed into an account you have shared it with.
 

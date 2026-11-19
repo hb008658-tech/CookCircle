@@ -279,6 +279,7 @@ function insertUser(u) {
     .run(u.id,u.name,u.email,u.phoneHash||null,u.societyId,u.apartment,u.role || 'customer',u.salt,u.passwordHash,u.createdAt);
   if ((u.role || 'customer') === 'customer') {
     sql.prepare('INSERT INTO households(id,user_id,society_id,apartment,household_name,updated_at) VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),u.id,u.societyId,u.apartment,String(u.householdName||'').trim().slice(0,80),u.createdAt);
+    queueAdminDirectorySync();
   }
   if (u.role === 'cook') {
     const address=encryptSensitiveText(u.address),phone=encryptSensitiveText(u.phone);
@@ -304,13 +305,15 @@ let directorySyncTimer=null;
 function buildAdminDirectorySnapshot(){
   const syncedAt=new Date().toISOString();
   const societies=sql.prepare('SELECT id,name,city,is_active AS isActive,created_at AS createdAt FROM societies ORDER BY name').all();
-  const cooks=sql.prepare("SELECT id,name,verification_status AS verificationStatus,is_active AS isActive,years_experience AS yearsExperience FROM cook_profiles ORDER BY name").all();
+  const cooks=sql.prepare("SELECT id,name,verification_status AS verificationStatus,is_active AS isActive,years_experience AS yearsExperience,phone_encrypted AS phoneEncrypted,phone_nonce AS phoneNonce,phone_tag AS phoneTag FROM cook_profiles ORDER BY name").all();
+  const households=sql.prepare(`SELECT h.id,u.name AS memberName,h.household_name AS householdName,s.name AS societyName,u.email,u.created_at AS createdAt FROM households h JOIN users u ON u.id=h.user_id JOIN societies s ON s.id=h.society_id WHERE u.role='customer' ORDER BY u.name`).all();
   const serviceAreas=sql.prepare(`SELECT a.cook_id AS cookId,s.name,s.city,a.status FROM cook_service_societies a JOIN societies s ON s.id=a.society_id ORDER BY s.name`).all();
   const areasByCook=new Map();
   for(const area of serviceAreas){const list=areasByCook.get(area.cookId)||[];list.push(`${area.name} · ${area.city} (${area.status})`);areasByCook.set(area.cookId,list)}
   return {
-    cooks:cooks.map(c=>[c.id,c.name,c.verificationStatus,c.isActive?'Yes':'No',(areasByCook.get(c.id)||[]).join('; '),c.yearsExperience,syncedAt]),
-    societies:societies.map(s=>[s.id,s.name,s.city,s.isActive?'Yes':'No',s.createdAt,syncedAt])
+    cooks:cooks.map(c=>[c.id,c.name,c.verificationStatus,c.isActive?'Yes':'No',(areasByCook.get(c.id)||[]).join('; '),c.yearsExperience,decryptSensitiveText(c.phoneEncrypted,c.phoneNonce,c.phoneTag),syncedAt]),
+    societies:societies.map(s=>[s.id,s.name,s.city,s.isActive?'Yes':'No',s.createdAt,syncedAt]),
+    households:households.map(h=>[h.id,h.memberName,h.householdName,h.societyName,h.email||'','', 'Yes',syncedAt])
   };
 }
 function queueAdminDirectorySync(){
@@ -1062,6 +1065,7 @@ const server = http.createServer(async (req, res) => {
       if(!requireRole(user,['customer'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
       sql.prepare('UPDATE households SET household_name=?,family_members=?,cuisines=?,dietary_preferences=?,cooking_styles=?,instructions=?,allergies=?,updated_at=? WHERE user_id=?')
         .run(String(body.householdName||'').trim().slice(0,80),Math.max(1,Math.min(20,Number(body.familyMembers)||1)),String(body.cuisines||'').slice(0,300),String(body.dietaryPreferences||'').slice(0,300),String(body.cookingStyles||'').slice(0,300),String(body.instructions||'').slice(0,1000),String(body.allergies||'').slice(0,500),new Date().toISOString(),user.id);
+      queueAdminDirectorySync();
       return send(res,200,{ok:true});
     }
     if (req.method === 'POST' && url.pathname === '/api/subscriptions') {

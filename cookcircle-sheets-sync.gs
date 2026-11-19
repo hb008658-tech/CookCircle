@@ -10,22 +10,27 @@ function doPost(e) {
     if (!expected || !safeTokenEquals_(String(body.token || ''), expected)) {
       return json_({ ok: false, error: 'Unauthorized' });
     }
-    if (!Array.isArray(body.cooks) || !Array.isArray(body.societies) ||
-        body.cooks.length > 5000 || body.societies.length > 5000 ||
-        body.cooks.some(row => !Array.isArray(row) || row.length !== 7) ||
-        body.societies.some(row => !Array.isArray(row) || row.length !== 6)) {
+    if (!Array.isArray(body.cooks) || !Array.isArray(body.societies) || !Array.isArray(body.households) ||
+        body.cooks.length > 5000 || body.societies.length > 5000 || body.households.length > 5000 ||
+        body.cooks.some(row => !Array.isArray(row) || row.length !== 8) ||
+        body.societies.some(row => !Array.isArray(row) || row.length !== 6) ||
+        body.households.some(row => !Array.isArray(row) || row.length !== 8)) {
       return json_({ ok: false, error: 'Invalid directory data' });
     }
 
     const spreadsheet = SpreadsheetApp.openById('1RObGhw51s9tLHVMq4Qlvay-8QCGH_FG_8H1t4RoVdzs');
     writeTab_(spreadsheet, 'Cooks', [
       'Cook ID', 'Cook name', 'Verification status', 'Active',
-      'Service societies', 'Experience (years)', 'Synced at (UTC)'
+      'Service societies', 'Experience (years)', 'Mobile number', 'Synced at (UTC)'
     ], body.cooks);
     writeTab_(spreadsheet, 'Societies', [
       'Society ID', 'Society name', 'City', 'Active',
       'Created at (UTC)', 'Synced at (UTC)'
     ], body.societies);
+    writeTab_(spreadsheet, 'Households', [
+      'Household ID', 'Member name', 'Household name', 'Registered society',
+      'Email address', 'Phone number', 'Active', 'Synced at (UTC)'
+    ], body.households);
     return json_({ ok: true, syncedAt: new Date().toISOString() });
   } catch (error) {
     console.error('CookCircle sheet sync failed:', error);
