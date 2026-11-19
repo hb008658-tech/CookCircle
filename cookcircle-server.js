@@ -1018,7 +1018,12 @@ const server = http.createServer(async (req, res) => {
       if(!requireRole(user,['customer'],res))return;
       const codeRows=sql.prepare("SELECT booking_id AS bookingId,message FROM notifications WHERE user_id=? AND kind='booking_requested' AND booking_id IS NOT NULL").all(user.id);
       const checkinCodes=new Map(codeRows.map(n=>[n.bookingId,(String(n.message||'').match(/check-in code is (\d{6})/)||[])[1]||'']));
-      const bookings = db.bookings.filter(b => b.userId === user.id).map(b=>({...b,checkinCode:checkinCodes.get(b.id)||''})).sort((a, b) => a.date.localeCompare(b.date));
+      const bookings = sql.prepare(`SELECT b.id,b.user_id AS userId,b.society_id AS societyId,b.date,b.slot,b.meal,b.people,b.instructions,b.cook,b.price_paise AS pricePaise,b.payment_status AS paymentStatus,b.status,b.created_at AS createdAt,b.subscription_id AS subscriptionId,b.cook_profile_id AS cookProfileId,c.name AS assignedCookName,c.phone AS legacyCookPhone,c.phone_encrypted AS cookPhoneEncrypted,c.phone_nonce AS cookPhoneNonce,c.phone_tag AS cookPhoneTag FROM bookings b LEFT JOIN cook_profiles c ON c.id=b.cook_profile_id WHERE b.user_id=? ORDER BY b.date,b.slot`).all(user.id).map(b=>{
+        const {legacyCookPhone,cookPhoneEncrypted,cookPhoneNonce,cookPhoneTag,assignedCookName,...booking}=b;
+        const mayContactCook=Boolean(b.cookProfileId)&&!['Cancelled','Refunded'].includes(b.status);let cookPhone='';
+        if(mayContactCook)cookPhone=decryptSensitiveText(cookPhoneEncrypted,cookPhoneNonce,cookPhoneTag)||legacyCookPhone||'';
+        return {...booking,cook:assignedCookName?`Cook · ${assignedCookName}`:b.cook,cookPhone,checkinCode:checkinCodes.get(b.id)||''};
+      });
       return send(res, 200, { bookings });
     }
     if (req.method === 'POST' && url.pathname === '/api/bookings') {
