@@ -11,6 +11,18 @@ const { PostgresSyncDatabase } = USE_POSTGRES ? require('./cookcircle-postgres-s
 
 const PORT = Number(process.env.PORT || 3000);
 const WEB_ROOT = __dirname;
+const LANDING_IMAGE_FILES = Object.freeze({
+  "inline-01.jpg": "assets/cookcircle-inline-01.jpg",
+  "inline-02.jpg": "An authentic Indian home meal on a real dining-kitchen table, with subtle signs of a lived-in home. No restaurant plating..jpg",
+  "inline-03.webp": "A very appetizing plate-bowl of rajma chawal or another recognizably homemade Indian comfort.webp",
+  "inline-04.webp": "Indian apartment-society environment with a sense of neighbouring homes-community..webp",
+  "inline-05.webp": "a cook\u2019s hands at the stove.webp",
+  "inline-06.webp": "indian-woman-cooking-kitchen-making-delicious-food-wearing-sari-apron_926199-4307338.webp",
+  "inline-07.webp": "assets/cookcircle-inline-07.webp",
+  "inline-08.webp": "Several genuinely Indian homemade dishes together- dal, sabzi, rice-roti, etc..webp",
+  "inline-09.webp": "A family dinner.webp",
+  "inline-10.jpg": "A visually interesting assortment of homemade Indian foods that can support categories such as comfort food, Sunday lunch, spicy food, lunch for work..jpg.jpg",
+});
 const DB_FILE = process.env.COOKCIRCLE_DB_FILE
   ? path.resolve(process.env.COOKCIRCLE_DB_FILE)
   : path.join(__dirname, 'cookcircle.sqlite');
@@ -621,15 +633,20 @@ function dateAllowed(date) {
   const limit = new Date(today); limit.setUTCDate(limit.getUTCDate() + 7);
   return chosen >= today && chosen <= limit;
 }
-function serveFile(res, file) {
-  const ext = path.extname(file); const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png' };
-  fs.readFile(file, (err, data) => { if (err) return send(res, 404, { error: 'Page not found' }); res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream' }); res.end(data); });
+function serveFile(res, file, headers = {}) {
+  const ext = path.extname(file); const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.avif': 'image/avif' };
+  fs.readFile(file, (err, data) => { if (err) return send(res, 404, { error: 'Page not found' }); res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream', ...headers }); res.end(data); });
 }
 
 const server = http.createServer(async (req, res) => {
   try {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (req.method === 'GET' && url.pathname === '/') return serveFile(res, path.join(WEB_ROOT, 'cookcircle-landing.html'));
+  if (req.method === 'GET' && url.pathname.startsWith('/media/')) {
+    const asset = LANDING_IMAGE_FILES[url.pathname.slice('/media/'.length)];
+    if (!asset) return send(res, 404, { error: 'Asset not found' });
+    return serveFile(res, path.join(WEB_ROOT, asset), { 'Cache-Control': 'public, max-age=86400' });
+  }
   if (req.method === 'GET' && url.pathname === '/cookcircle-diet-plate.jpg') return serveFile(res, path.join(WEB_ROOT, 'cookcircle-diet-plate.jpg'));
   if (req.method === 'GET' && url.pathname === '/cookcircle-vegetable-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'cookcircle-vegetable-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/admin-legumes-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'admin-legumes-background.jpg'));
