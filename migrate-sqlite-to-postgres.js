@@ -73,6 +73,13 @@ function encryptedCookProfile(row, oldKey, newKey) {
     if (clearColumn) row[clearColumn] = '';
   }
 }
+function encryptedHouseholdPhone(row, oldKey, newKey) {
+  if (!row.phone_encrypted) return;
+  const clear = decrypt(row.phone_encrypted, row.phone_nonce, row.phone_tag, oldKey);
+  const next = encrypt(clear, newKey);
+  if (!crypto.timingSafeEqual(clear, decrypt(next.encrypted, next.nonce, next.tag, newKey))) throw new Error('Encrypted household contact data failed verification.');
+  row.phone_encrypted = next.encrypted; row.phone_nonce = next.nonce; row.phone_tag = next.tag;
+}
 
 async function main() {
   if (!url) throw new Error('DATABASE_URL is not set. Run migrate-cookcircle-to-supabase.cmd to enter it securely.');
@@ -119,6 +126,7 @@ async function main() {
       for (const rawRow of rows) {
         const row = { ...rawRow };
         if (table === 'cook_profiles') encryptedCookProfile(row, oldKey, newKey);
+        if (table === 'households') encryptedHouseholdPhone(row, oldKey, newKey);
         if (table === 'cook_documents' && row.encrypted_data) {
           const clear = decrypt(row.encrypted_data, row.nonce, row.auth_tag, oldKey);
           const next = encrypt(clear, newKey);
