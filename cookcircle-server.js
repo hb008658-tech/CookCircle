@@ -538,7 +538,7 @@ function dateAllowed(date) {
   return chosen >= today && chosen <= limit;
 }
 function serveFile(res, file) {
-  const ext = path.extname(file); const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
+  const ext = path.extname(file); const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png' };
   fs.readFile(file, (err, data) => { if (err) return send(res, 404, { error: 'Page not found' }); res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream' }); res.end(data); });
 }
 
@@ -551,15 +551,6 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/admin-legumes-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'admin-legumes-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/household-dried-fruit-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'household-dried-fruit-background.jpg'));
   if (req.method === 'GET' && url.pathname === '/cook-workspace-vegetables-background.jpg') return serveFile(res, path.join(WEB_ROOT, 'cook-workspace-vegetables-background.jpg'));
-  if (req.method === 'GET' && url.pathname === '/cc-hero-home.webp') return serveFile(res, path.join(WEB_ROOT, 'cc-hero-home.webp'));
-  if (req.method === 'GET' && url.pathname === '/cc-cook-portrait.jpg') return serveFile(res, path.join(WEB_ROOT, 'cc-cook-portrait.jpg'));
-  if (req.method === 'GET' && url.pathname === '/cc-food-spread.jpeg') return serveFile(res, path.join(WEB_ROOT, 'cc-food-spread.jpeg'));
-  if (req.method === 'GET' && url.pathname === '/cc-rajma.jpeg') return serveFile(res, path.join(WEB_ROOT, 'cc-rajma.jpeg'));
-  if (req.method === 'GET' && url.pathname === '/cc-cook-action.jpg') return serveFile(res, path.join(WEB_ROOT, 'cc-cook-action.jpg'));
-  if (req.method === 'GET' && url.pathname === '/cc-cooking-hands.jpg') return serveFile(res, path.join(WEB_ROOT, 'cc-cooking-hands.jpg'));
-  if (req.method === 'GET' && url.pathname === '/cc-family-dinner.jpg') return serveFile(res, path.join(WEB_ROOT, 'cc-family-dinner.jpg'));
-  if (req.method === 'GET' && url.pathname === '/cc-community.jpg') return serveFile(res, path.join(WEB_ROOT, 'cc-community.jpg'));
-  if (req.method === 'GET' && url.pathname === '/cc-food-collage.webp') return serveFile(res, path.join(WEB_ROOT, 'cc-food-collage.webp'));
   if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, service: 'CookCircle MVP API', build: USE_POSTGRES ? 'postgres-migration-bridge-v1' : 'sqlite-dynamic-stakeholders-v1', database: { engine: USE_POSTGRES ? 'PostgreSQL' : 'SQLite', connected: sql.prepare('SELECT 1 AS ok').get().ok === 1, persistent: true, ...(USE_POSTGRES ? {} : { file: path.basename(DB_FILE) }) }, features: { dynamicPersistentDatabase: true, bookingCheckinCodeInHouseholdBookings: true, publicHelpRequests: true, resolvedHelpRequestClear: true, emailSignupVerification: true, mobileSignupVerification: false, cookSignupWithoutResidence: true, cookDefaultAvatars: true, profilePhotoCrop: true, alphanumericCaptcha: true, caseSensitiveMixedCaptcha: true, dietPlateImage: true, vegetableBackground: true, societyRegistrationReview: true, adminPasswordReset: true, existingAdminPromotion: true, cookAndSocietyRemoval: true, adminBackground: true, permanentAdminDeletes: true, societySessionRevocation: true, removedCookCashoutOnly: true } });
   if (req.method === 'GET' && url.pathname === '/api/societies') return send(res, 200, { societies: db.societies });
   if (req.method === 'GET' && url.pathname === '/api/services') return send(res,200,{services:sql.prepare('SELECT id,name,duration_minutes AS durationMinutes,base_price_paise AS pricePaise FROM service_categories WHERE active=1 ORDER BY name').all()});
