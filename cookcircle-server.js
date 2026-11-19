@@ -996,19 +996,28 @@ const server = http.createServer(async (req, res) => {
         for(const booking of missed)autoAssignBooking(booking.id);
       }
       cook.serviceSocieties=sql.prepare(`SELECT s.id,s.name,s.city FROM cook_service_societies a JOIN societies s ON s.id=a.society_id WHERE a.cook_id=? AND a.status='approved' AND s.is_active=1 ORDER BY s.name`).all(cook.id);
-      const bookings=sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,society.name AS societyName,
+      const bookings=sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,b.cook_profile_id AS cookProfileId,society.name AS societyName,
         CASE WHEN offer.status='pending' THEN 'Request pending' ELSE b.status END AS status,
         offer.status AS offerStatus,b.cook,
         CASE WHEN b.cook_profile_id=? THEN b.people ELSE '' END AS people,
         CASE WHEN b.cook_profile_id=? THEN b.instructions ELSE '' END AS instructions,
         CASE WHEN b.cook_profile_id=? THEN u.name ELSE 'New booking request' END AS household,
-        CASE WHEN b.cook_profile_id=? THEN u.apartment ELSE '' END AS apartment
+        CASE WHEN b.cook_profile_id=? THEN u.apartment ELSE '' END AS apartment,
+        CASE WHEN b.cook_profile_id=? THEN h.phone_encrypted ELSE NULL END AS householdPhoneEncrypted,
+        CASE WHEN b.cook_profile_id=? THEN h.phone_nonce ELSE NULL END AS householdPhoneNonce,
+        CASE WHEN b.cook_profile_id=? THEN h.phone_tag ELSE NULL END AS householdPhoneTag
         FROM bookings b JOIN users u ON u.id=b.user_id
+        LEFT JOIN households h ON h.user_id=b.user_id
         LEFT JOIN booking_cook_offers offer ON offer.booking_id=b.id AND offer.cook_id=?
         LEFT JOIN cook_service_societies area ON area.cook_id=? AND area.society_id=b.society_id AND area.status='approved'
         JOIN societies society ON society.id=b.society_id AND society.is_active=1
         WHERE (b.cook_profile_id=? OR (offer.status='pending' AND area.cook_id IS NOT NULL AND b.status='Confirmed' AND b.payment_status IN ('simulated-paid','credit-applied')))
-          AND b.status NOT IN ('Cancelled','Refunded') ORDER BY b.date,b.slot`).all(cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id);
+          AND b.status NOT IN ('Cancelled','Refunded') ORDER BY b.date,b.slot`).all(cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id).map(b=>{
+            const assignedToCook=b.cookProfileId===cook.id;
+            const householdPhone=assignedToCook?decryptSensitiveText(b.householdPhoneEncrypted,b.householdPhoneNonce,b.householdPhoneTag):'';
+            const {householdPhoneEncrypted,householdPhoneNonce,householdPhoneTag,...booking}=b;
+            return {...booking,householdPhone};
+          });
       return send(res,200,{cook,bookings});
     }
     if(req.method==='GET'&&url.pathname==='/api/cook/earnings'){
