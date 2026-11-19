@@ -709,6 +709,8 @@ window.closeAuth = closeAuth;
 // Robust homepage CTA binding: keeps the new editorial homepage independent
 // of the older navigation/bootstrap event wiring.
 document.addEventListener('click', function(e){
+  const closeButton = e.target.closest('#closeModal');
+  if(closeButton){e.preventDefault();e.stopImmediatePropagation();window.closeAuth();return;}
   const button = e.target.closest('#heroJoin, #cookJoinHero, #cookJoinHero2, [data-act=join], [data-act=cook], [data-act=login]');
 if(!button) return;
   e.stopImmediatePropagation();
