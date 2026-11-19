@@ -785,7 +785,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/admin/bookings') {
       if (!requireRole(user,['platform_admin'],res)) return;
-      return send(res,200,{bookings:sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,b.status,b.society_id AS societyId,b.payment_status AS paymentStatus,b.price_paise AS pricePaise,u.name AS household,u.apartment,s.name AS society,b.cook FROM bookings b JOIN users u ON u.id=b.user_id JOIN societies s ON s.id=b.society_id ORDER BY b.date DESC,b.slot`).all()});
+      return send(res,200,{bookings:sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,b.status,b.society_id AS societyId,b.payment_status AS paymentStatus,b.price_paise AS pricePaise,u.name AS household,u.apartment,s.name AS society,b.cook,c.name AS assignedCookName FROM bookings b JOIN users u ON u.id=b.user_id JOIN societies s ON s.id=b.society_id LEFT JOIN cook_profiles c ON c.id=b.cook_profile_id ORDER BY b.date DESC,b.slot`).all()});
     }
     const adminBooking=url.pathname.match(/^\/api\/admin\/bookings\/([^/]+)$/);
     if (req.method === 'PATCH' && adminBooking) {
