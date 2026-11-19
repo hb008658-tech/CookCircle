@@ -126,7 +126,8 @@ sql.exec(`
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE REFERENCES users(id), society_id TEXT NOT NULL REFERENCES societies(id),
     apartment TEXT NOT NULL, household_name TEXT NOT NULL DEFAULT '', family_members INTEGER NOT NULL DEFAULT 1, cuisines TEXT NOT NULL DEFAULT '[]',
     dietary_preferences TEXT NOT NULL DEFAULT '', cooking_styles TEXT NOT NULL DEFAULT '[]',
-    instructions TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+    instructions TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '',
+    phone_encrypted BLOB, phone_nonce BLOB, phone_tag BLOB, updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS cook_verification_records (
     id TEXT PRIMARY KEY, cook_id TEXT NOT NULL REFERENCES cook_profiles(id), record_type TEXT NOT NULL,
@@ -232,6 +233,9 @@ ensureColumn('cook_profiles', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('sessions', 'revoked_reason', 'TEXT');
 ensureColumn('societies', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('households', 'household_name', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('households', 'phone_encrypted', 'BLOB');
+ensureColumn('households', 'phone_nonce', 'BLOB');
+ensureColumn('households', 'phone_tag', 'BLOB');
 ensureColumn('bookings', 'cook_profile_id', 'TEXT REFERENCES cook_profiles(id)');
 ensureColumn('bookings', 'subscription_id', 'TEXT REFERENCES subscriptions(id)');
 ensureColumn('bookings', 'service_otp_hash', 'TEXT');
@@ -278,7 +282,8 @@ function insertUser(u) {
   sql.prepare('INSERT INTO users(id,name,email,phone_hash,society_id,apartment,role,salt,password_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
     .run(u.id,u.name,u.email,u.phoneHash||null,u.societyId,u.apartment,u.role || 'customer',u.salt,u.passwordHash,u.createdAt);
   if ((u.role || 'customer') === 'customer') {
-    sql.prepare('INSERT INTO households(id,user_id,society_id,apartment,household_name,updated_at) VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),u.id,u.societyId,u.apartment,String(u.householdName||'').trim().slice(0,80),u.createdAt);
+    const householdPhone=u.householdPhone||{};
+    sql.prepare('INSERT INTO households(id,user_id,society_id,apartment,household_name,phone_encrypted,phone_nonce,phone_tag,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(crypto.randomUUID(),u.id,u.societyId,u.apartment,String(u.householdName||'').trim().slice(0,80),householdPhone.encrypted||null,householdPhone.nonce||null,householdPhone.authTag||null,u.createdAt);
     queueAdminDirectorySync();
   }
   if (u.role === 'cook') {
@@ -306,14 +311,14 @@ function buildAdminDirectorySnapshot(){
   const syncedAt=new Date().toISOString();
   const societies=sql.prepare('SELECT id,name,city,is_active AS isActive,created_at AS createdAt FROM societies ORDER BY name').all();
   const cooks=sql.prepare("SELECT id,name,verification_status AS verificationStatus,is_active AS isActive,years_experience AS yearsExperience,phone_encrypted AS phoneEncrypted,phone_nonce AS phoneNonce,phone_tag AS phoneTag FROM cook_profiles ORDER BY name").all();
-  const households=sql.prepare(`SELECT h.id,u.name AS memberName,h.household_name AS householdName,s.name AS societyName,u.email,u.created_at AS createdAt FROM households h JOIN users u ON u.id=h.user_id JOIN societies s ON s.id=h.society_id WHERE u.role='customer' ORDER BY u.name`).all();
+  const households=sql.prepare(`SELECT h.id,u.name AS memberName,h.household_name AS householdName,s.name AS societyName,u.email,h.phone_encrypted AS phoneEncrypted,h.phone_nonce AS phoneNonce,h.phone_tag AS phoneTag FROM households h JOIN users u ON u.id=h.user_id JOIN societies s ON s.id=h.society_id WHERE u.role='customer' ORDER BY u.name`).all();
   const serviceAreas=sql.prepare(`SELECT a.cook_id AS cookId,s.name,s.city,a.status FROM cook_service_societies a JOIN societies s ON s.id=a.society_id ORDER BY s.name`).all();
   const areasByCook=new Map();
   for(const area of serviceAreas){const list=areasByCook.get(area.cookId)||[];list.push(`${area.name} · ${area.city} (${area.status})`);areasByCook.set(area.cookId,list)}
   return {
     cooks:cooks.map(c=>[c.id,c.name,c.verificationStatus,c.isActive?'Yes':'No',(areasByCook.get(c.id)||[]).join('; '),c.yearsExperience,decryptSensitiveText(c.phoneEncrypted,c.phoneNonce,c.phoneTag),syncedAt]),
     societies:societies.map(s=>[s.id,s.name,s.city,s.isActive?'Yes':'No',s.createdAt,syncedAt]),
-    households:households.map(h=>[h.id,h.memberName,h.householdName,h.societyName,h.email||'','', 'Yes',syncedAt])
+    households:households.map(h=>[h.id,h.memberName,h.householdName,h.societyName,h.email||'',decryptSensitiveText(h.phoneEncrypted,h.phoneNonce,h.phoneTag), 'Yes',syncedAt])
   };
 }
 function queueAdminDirectorySync(){
@@ -706,7 +711,7 @@ const server = http.createServer(async (req, res) => {
     }else if(!/^\S+@\S+\.\S+$/.test(email)&&!/^\+[1-9]\d{7,14}$/.test(normalizeSignupPhone(body.email)))return send(res,400,{error:'Enter a valid email address or mobile number.'});
     if (url.pathname.endsWith('/signup')) {
       const name = String(body.name || '').trim(), role = String(body.role || 'customer'), householdName = role === 'customer' ? String(body.householdName || '').trim().slice(0,80) : ''; let societyId = String(body.societyId || '');
-      let apartment = String(body.apartment || '').trim(), address='', phone='', yearsExperience=0, encryptedDocs=[],serviceSocietyIds=[];
+      let apartment = String(body.apartment || '').trim(), address='', phone='', householdPhone=null, yearsExperience=0, encryptedDocs=[],serviceSocietyIds=[];
       if (!['customer','cook','society_admin'].includes(role)) return send(res, 403, { error: 'Platform administrator accounts must be configured by the operator.' });
       const verificationToken=String(body.verificationToken||''),verificationChannel=String(body.verificationChannel||''),verificationProof=signupVerificationProofs.get(verificationToken);
       const verificationDestination=verificationChannel==='email'?email:'';
@@ -724,8 +729,15 @@ const server = http.createServer(async (req, res) => {
         if(!documentKey())return send(res,503,{error:'Cook document encryption is not configured. Set COOKCIRCLE_DOCUMENT_KEY in PowerShell, restart the server, and try again.'});
         if(!Array.isArray(body.documents)||body.documents.length<1||body.documents.length>3)return send(res,400,{error:'Upload 1 to 3 identity verification documents.'});
         try{encryptedDocs=body.documents.map(encryptCookDocument)}catch(e){return send(res,400,{error:e.message})}if(encryptedDocs.reduce((n,d)=>n+d.encrypted.length,0)>10*1024*1024)return send(res,400,{error:'Identity documents must total 10 MB or less.'});apartment='Cook application';
-      }else if(!apartment)return send(res,400,{error:'Enter your apartment number.'});
-      const pass = hashPassword(password); const user = { id: crypto.randomUUID(), name, householdName, email, phoneHash:signupPhoneHash, societyId, apartment, role, address, phone, yearsExperience, salt: pass.salt, passwordHash: pass.hash, createdAt: new Date().toISOString() };
+      }else{
+        if(!apartment)return send(res,400,{error:'Enter your apartment number.'});
+        if(role==='customer'){
+          phone=String(body.phone||'').trim();
+          if(!/^[+\d][\d\s().-]{8,19}$/.test(phone))return send(res,400,{error:'Enter a valid household mobile number, including your country code.'});
+          try{householdPhone=encryptSensitiveText(phone)}catch(e){return send(res,503,{error:'Household phone encryption is not configured. Ask the site administrator to check the server encryption key.'})}
+        }
+      }
+      const pass = hashPassword(password); const user = { id: crypto.randomUUID(), name, householdName, email, phoneHash:signupPhoneHash, societyId, apartment, role, address, phone, householdPhone, yearsExperience, salt: pass.salt, passwordHash: pass.hash, createdAt: new Date().toISOString() };
       insertUser(user);if(role==='cook'){const cook=sql.prepare('SELECT id FROM cook_profiles WHERE user_id=?').get(user.id),addArea=sql.prepare("INSERT INTO cook_service_societies(cook_id,society_id,status) VALUES(?,?,'pending')");for(const societyId of serviceSocietyIds)addArea.run(cook.id,societyId);storeCookDocuments(cook.id,body.documents,encryptedDocs);queueAdminDirectorySync()}signupVerificationProofs.delete(verificationToken);return send(res, 201, { token: tokenFor(user), user: cleanUser(user) });
     }
     let user;if(/^\S+@\S+\.\S+$/.test(email))user=db.users.find(account=>account.email&&account.email.toLowerCase()===email);else{try{const phoneHash=phoneLookupHash(body.email);user=db.users.find(account=>account.phoneHash===phoneHash)}catch{user=null}}
@@ -984,19 +996,28 @@ const server = http.createServer(async (req, res) => {
         for(const booking of missed)autoAssignBooking(booking.id);
       }
       cook.serviceSocieties=sql.prepare(`SELECT s.id,s.name,s.city FROM cook_service_societies a JOIN societies s ON s.id=a.society_id WHERE a.cook_id=? AND a.status='approved' AND s.is_active=1 ORDER BY s.name`).all(cook.id);
-      const bookings=sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,society.name AS societyName,
+      const bookings=sql.prepare(`SELECT b.id,b.date,b.slot,b.meal,b.cook_profile_id AS cookProfileId,society.name AS societyName,
         CASE WHEN offer.status='pending' THEN 'Request pending' ELSE b.status END AS status,
         offer.status AS offerStatus,b.cook,
         CASE WHEN b.cook_profile_id=? THEN b.people ELSE '' END AS people,
         CASE WHEN b.cook_profile_id=? THEN b.instructions ELSE '' END AS instructions,
         CASE WHEN b.cook_profile_id=? THEN u.name ELSE 'New booking request' END AS household,
-        CASE WHEN b.cook_profile_id=? THEN u.apartment ELSE '' END AS apartment
+        CASE WHEN b.cook_profile_id=? THEN u.apartment ELSE '' END AS apartment,
+        CASE WHEN b.cook_profile_id=? THEN h.phone_encrypted ELSE NULL END AS householdPhoneEncrypted,
+        CASE WHEN b.cook_profile_id=? THEN h.phone_nonce ELSE NULL END AS householdPhoneNonce,
+        CASE WHEN b.cook_profile_id=? THEN h.phone_tag ELSE NULL END AS householdPhoneTag
         FROM bookings b JOIN users u ON u.id=b.user_id
+        LEFT JOIN households h ON h.user_id=b.user_id
         LEFT JOIN booking_cook_offers offer ON offer.booking_id=b.id AND offer.cook_id=?
         LEFT JOIN cook_service_societies area ON area.cook_id=? AND area.society_id=b.society_id AND area.status='approved'
         JOIN societies society ON society.id=b.society_id AND society.is_active=1
         WHERE (b.cook_profile_id=? OR (offer.status='pending' AND area.cook_id IS NOT NULL AND b.status='Confirmed' AND b.payment_status IN ('simulated-paid','credit-applied')))
-          AND b.status NOT IN ('Cancelled','Refunded') ORDER BY b.date,b.slot`).all(cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id);
+          AND b.status NOT IN ('Cancelled','Refunded') ORDER BY b.date,b.slot`).all(cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id,cook.id).map(b=>{
+            const assignedToCook=b.cookProfileId===cook.id;
+            const householdPhone=assignedToCook?decryptSensitiveText(b.householdPhoneEncrypted,b.householdPhoneNonce,b.householdPhoneTag):'';
+            const {householdPhoneEncrypted,householdPhoneNonce,householdPhoneTag,...booking}=b;
+            return {...booking,householdPhone};
+          });
       return send(res,200,{cook,bookings});
     }
     if(req.method==='GET'&&url.pathname==='/api/cook/earnings'){

@@ -91,7 +91,8 @@
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE REFERENCES users(id), society_id TEXT NOT NULL REFERENCES societies(id),
     apartment TEXT NOT NULL, household_name TEXT NOT NULL DEFAULT '', family_members INTEGER NOT NULL DEFAULT 1, cuisines TEXT NOT NULL DEFAULT '[]',
     dietary_preferences TEXT NOT NULL DEFAULT '', cooking_styles TEXT NOT NULL DEFAULT '[]',
-    instructions TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+    instructions TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '',
+    phone_encrypted BYTEA, phone_nonce BYTEA, phone_tag BYTEA, updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS cook_verification_records (
     id TEXT PRIMARY KEY, cook_id TEXT NOT NULL REFERENCES cook_profiles(id), record_type TEXT NOT NULL,
