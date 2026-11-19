@@ -284,6 +284,7 @@ function insertUser(u) {
     const address=encryptSensitiveText(u.address),phone=encryptSensitiveText(u.phone);
     sql.prepare('INSERT INTO cook_profiles(id,user_id,name,society_id,verification_status,years_experience,address_encrypted,address_nonce,address_tag,phone_encrypted,phone_nonce,phone_tag,is_demo) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)')
       .run(crypto.randomUUID(),u.id,u.name,u.societyId,'application received',u.yearsExperience,address.encrypted,address.nonce,address.authTag,phone.encrypted,phone.nonce,phone.authTag);
+    queueAdminDirectorySync();
   }
 }
 function insertBooking(b) {
@@ -297,6 +298,36 @@ function insertBooking(b) {
     .run(crypto.randomUUID(),b.userId,b.id,'booking_requested',`Booking ${b.id} requested. Your cook check-in code is ${b.checkinCode}.`,b.createdAt);
 }
 function storeCookDocuments(cookId,docs,encryptedDocs) {const save=sql.prepare('INSERT INTO cook_documents(id,cook_id,file_name,mime_type,encrypted_data,nonce,auth_tag,uploaded_at) VALUES(?,?,?,?,?,?,?,?)');const record=sql.prepare('INSERT INTO cook_verification_records(id,cook_id,record_type,status,notes,updated_at) VALUES(?,?,?,?,?,?)');const now=new Date().toISOString();encryptedDocs.forEach((d,i)=>{const id=crypto.randomUUID();save.run(id,cookId,d.fileName,d.mimeType,d.encrypted,d.nonce,d.authTag,now);record.run(crypto.randomUUID(),cookId,'Identity document','pending',d.fileName,now)})}
+const adminSheetUrl='https://docs.google.com/spreadsheets/d/1RObGhw51s9tLHVMq4Qlvay-8QCGH_FG_8H1t4RoVdzs/edit';
+let directorySyncState={at:null,error:''};
+let directorySyncTimer=null;
+function buildAdminDirectorySnapshot(){
+  const syncedAt=new Date().toISOString();
+  const societies=sql.prepare('SELECT id,name,city,is_active AS isActive,created_at AS createdAt FROM societies ORDER BY name').all();
+  const cooks=sql.prepare("SELECT id,name,verification_status AS verificationStatus,is_active AS isActive,years_experience AS yearsExperience FROM cook_profiles ORDER BY name").all();
+  const serviceAreas=sql.prepare(`SELECT a.cook_id AS cookId,s.name,s.city,a.status FROM cook_service_societies a JOIN societies s ON s.id=a.society_id ORDER BY s.name`).all();
+  const areasByCook=new Map();
+  for(const area of serviceAreas){const list=areasByCook.get(area.cookId)||[];list.push(`${area.name} · ${area.city} (${area.status})`);areasByCook.set(area.cookId,list)}
+  return {
+    cooks:cooks.map(c=>[c.id,c.name,c.verificationStatus,c.isActive?'Yes':'No',(areasByCook.get(c.id)||[]).join('; '),c.yearsExperience,syncedAt]),
+    societies:societies.map(s=>[s.id,s.name,s.city,s.isActive?'Yes':'No',s.createdAt,syncedAt])
+  };
+}
+function queueAdminDirectorySync(){
+  if(directorySyncTimer)clearTimeout(directorySyncTimer);
+  directorySyncTimer=setTimeout(async()=>{
+    directorySyncTimer=null;
+    const endpoint=String(process.env.COOKCIRCLE_SHEETS_SYNC_URL||'').trim();
+    const token=String(process.env.COOKCIRCLE_SHEETS_SYNC_TOKEN||'').trim();
+    if(!endpoint||!token){directorySyncState={at:null,error:'Google Sheets sync is not configured in Render.'};return}
+    try{
+      const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,...buildAdminDirectorySnapshot()}),signal:AbortSignal.timeout(15000)});
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok||result.ok!==true)throw new Error('Google Sheets returned an unsuccessful sync response.');
+      directorySyncState={at:new Date().toISOString(),error:''};
+    }catch(error){directorySyncState={at:null,error:'The live Sheet update failed. Check the Apps Script deployment and Render settings.'};console.error('CookCircle Google Sheets directory sync failed:',error.message)}
+  },250);
+}
 function setBookingStatus(id, status, note, cookId = null) {
   const now = new Date().toISOString();
   if (cookId) {
@@ -692,7 +723,7 @@ const server = http.createServer(async (req, res) => {
         try{encryptedDocs=body.documents.map(encryptCookDocument)}catch(e){return send(res,400,{error:e.message})}if(encryptedDocs.reduce((n,d)=>n+d.encrypted.length,0)>10*1024*1024)return send(res,400,{error:'Identity documents must total 10 MB or less.'});apartment='Cook application';
       }else if(!apartment)return send(res,400,{error:'Enter your apartment number.'});
       const pass = hashPassword(password); const user = { id: crypto.randomUUID(), name, householdName, email, phoneHash:signupPhoneHash, societyId, apartment, role, address, phone, yearsExperience, salt: pass.salt, passwordHash: pass.hash, createdAt: new Date().toISOString() };
-      insertUser(user);if(role==='cook'){const cook=sql.prepare('SELECT id FROM cook_profiles WHERE user_id=?').get(user.id),addArea=sql.prepare("INSERT INTO cook_service_societies(cook_id,society_id,status) VALUES(?,?,'pending')");for(const societyId of serviceSocietyIds)addArea.run(cook.id,societyId);storeCookDocuments(cook.id,body.documents,encryptedDocs)}signupVerificationProofs.delete(verificationToken);return send(res, 201, { token: tokenFor(user), user: cleanUser(user) });
+      insertUser(user);if(role==='cook'){const cook=sql.prepare('SELECT id FROM cook_profiles WHERE user_id=?').get(user.id),addArea=sql.prepare("INSERT INTO cook_service_societies(cook_id,society_id,status) VALUES(?,?,'pending')");for(const societyId of serviceSocietyIds)addArea.run(cook.id,societyId);storeCookDocuments(cook.id,body.documents,encryptedDocs);queueAdminDirectorySync()}signupVerificationProofs.delete(verificationToken);return send(res, 201, { token: tokenFor(user), user: cleanUser(user) });
     }
     let user;if(/^\S+@\S+\.\S+$/.test(email))user=db.users.find(account=>account.email&&account.email.toLowerCase()===email);else{try{const phoneHash=phoneLookupHash(body.email);user=db.users.find(account=>account.phoneHash===phoneHash)}catch{user=null}}
     if (!user || !verifyPassword(password, user)) return send(res, 401, { error: 'Email/mobile number or password is incorrect.' });
@@ -726,6 +757,16 @@ const server = http.createServer(async (req, res) => {
       if (!requireRole(user,['platform_admin'],res)) return;
       const count=(table,where='')=>sql.prepare(`SELECT COUNT(*) AS n FROM ${table} ${where}`).get().n;
       return send(res,200,{overview:{societies:count('societies','WHERE is_active=1'),households:count('households'),activeSubscribers:count('subscriptions',"WHERE status='active'"),verifiedCooks:count('cook_profiles',"WHERE verification_status='approved' AND is_active=1"),pendingCooks:count('cook_profiles',"WHERE verification_status IN ('pending','application received','in review') AND is_active=1"),todayBookings:sql.prepare('SELECT COUNT(*) AS n FROM bookings WHERE date=?').get(new Date().toISOString().slice(0,10)).n,upcomingBookings:count('bookings',"WHERE date>=date('now')"),completedBookings:count('bookings',"WHERE status='Completed'"),cancelledBookings:count('bookings',"WHERE status='Cancelled'"),revenuePaise:sql.prepare("SELECT COALESCE(SUM(amount_paise),0) AS n FROM payments WHERE status IN ('paid','simulated-paid')").get().n,openComplaints:count('complaints',"WHERE status='open'"),openHelpRequests:count('help_requests',"WHERE status='open'"),cashoutRequests:count('cook_cashouts',"WHERE status='requested'")}});
+    }
+    if(req.method==='GET'&&url.pathname==='/api/admin/sheets'){
+      if(!requireRole(user,['platform_admin'],res))return;
+      const syncConfigured=Boolean(process.env.COOKCIRCLE_SHEETS_SYNC_URL&&process.env.COOKCIRCLE_SHEETS_SYNC_TOKEN);
+      return send(res,200,{sheetUrl:adminSheetUrl,syncConfigured,lastSyncAt:directorySyncState.at,lastSyncError:directorySyncState.error||(!syncConfigured?'Google Sheets live sync is not configured in Render.':'')});
+    }
+    if(req.method==='POST'&&url.pathname==='/api/admin/sheets/sync'){
+      if(!requireRole(user,['platform_admin'],res))return;
+      queueAdminDirectorySync();
+      return send(res,202,{ok:true,queued:true});
     }
     if (req.method === 'GET' && url.pathname === '/api/admin/bookings') {
       if (!requireRole(user,['platform_admin'],res)) return;
@@ -787,7 +828,7 @@ const server = http.createServer(async (req, res) => {
       sql.prepare('UPDATE cook_verification_records SET status=?,reviewed_by=?,updated_at=? WHERE cook_id=? AND status IN (\'pending\',\'in review\')').run(status,user.id,new Date().toISOString(),row.id);
       sql.prepare('INSERT INTO cook_verification_records(id,cook_id,record_type,status,notes,reviewed_by,updated_at) VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),row.id,'admin review',status,String(body.notes||'').slice(0,500),user.id,new Date().toISOString());
       if(row.user_id)sql.prepare('INSERT INTO notifications(id,user_id,kind,message,created_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),row.user_id,'cook_verification',`Your cook application was ${status}.`,new Date().toISOString());
-      logAdmin(user,'cook_verification_updated','cook',row.id,status);return send(res,200,{ok:true});
+      logAdmin(user,'cook_verification_updated','cook',row.id,status);queueAdminDirectorySync();return send(res,200,{ok:true});
     }
     const adminCookDelete=url.pathname.match(/^\/api\/admin\/cooks\/([^/]+)$/);
     if(req.method==='DELETE'&&adminCookDelete){
@@ -820,10 +861,10 @@ const server = http.createServer(async (req, res) => {
         logAdmin(user,'cook_request_permanently_deleted','cook',cookId,row.name);
         sql.exec('COMMIT');
       }catch(e){sql.exec('ROLLBACK');return send(res,409,{error:'This cook still has linked records and cannot be permanently deleted. Keep it removed instead.'})}
-      return send(res,200,{ok:true});
+      queueAdminDirectorySync();return send(res,200,{ok:true});
     }
     const adminCookActive=url.pathname.match(/^\/api\/admin\/cooks\/([^/]+)\/active$/);
-    if(req.method==='PATCH'&&adminCookActive){if(!requireRole(user,['platform_admin'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}if(typeof body.active!=='boolean')return send(res,400,{error:'Choose whether to remove or restore this cook.'});const result=sql.prepare('UPDATE cook_profiles SET is_active=? WHERE id=?').run(body.active?1:0,adminCookActive[1]);if(!result.changes)return send(res,404,{error:'Cook not found.'});logAdmin(user,body.active?'cook_restored':'cook_removed','cook',adminCookActive[1],body.active?'active':'removed from new bookings');return send(res,200,{ok:true,active:body.active});}
+    if(req.method==='PATCH'&&adminCookActive){if(!requireRole(user,['platform_admin'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}if(typeof body.active!=='boolean')return send(res,400,{error:'Choose whether to remove or restore this cook.'});const result=sql.prepare('UPDATE cook_profiles SET is_active=? WHERE id=?').run(body.active?1:0,adminCookActive[1]);if(!result.changes)return send(res,404,{error:'Cook not found.'});logAdmin(user,body.active?'cook_restored':'cook_removed','cook',adminCookActive[1],body.active?'active':'removed from new bookings');queueAdminDirectorySync();return send(res,200,{ok:true,active:body.active});}
     if (req.method === 'GET' && url.pathname === '/api/admin/complaints') {
       if (!requireRole(user,['platform_admin'],res)) return;
       return send(res,200,{complaints:sql.prepare(`SELECT c.id,c.category,c.details,c.status,c.created_at AS createdAt,u.name AS customer,b.id AS bookingId FROM complaints c JOIN users u ON u.id=c.user_id LEFT JOIN bookings b ON b.id=c.booking_id ORDER BY c.created_at DESC`).all()});
@@ -859,7 +900,7 @@ const server = http.createServer(async (req, res) => {
       if(!requireRole(user,['platform_admin'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
       const status=['approved','rejected'].includes(body.status)?body.status:'';if(!status)return send(res,400,{error:'Choose approve or reject.'});const row=sql.prepare('SELECT * FROM society_registrations WHERE id=?').get(adminSocietyRegistration[1]);if(!row)return send(res,404,{error:'Society registration not found.'});if(row.status!=='pending')return send(res,409,{error:'This society registration has already been reviewed.'});
       const now=new Date().toISOString();let societyId=null;sql.exec('BEGIN IMMEDIATE');try{if(status==='approved'){societyId='soc-'+crypto.randomBytes(6).toString('hex');sql.prepare('INSERT INTO societies(id,name,city) VALUES(?,?,?)').run(societyId,row.society_name,row.city)}sql.prepare('UPDATE society_registrations SET status=?,reviewed_at=?,reviewed_by=?,society_id=? WHERE id=? AND status=\'pending\'').run(status,now,user.id,societyId,row.id);sql.exec('COMMIT')}catch(e){sql.exec('ROLLBACK');return send(res,500,{error:'Could not save the society review.'})}
-      logAdmin(user,'society_registration_'+status,'society_registration',row.id,row.society_name);return send(res,200,{ok:true,status,societyId});
+      logAdmin(user,'society_registration_'+status,'society_registration',row.id,row.society_name);if(status==='approved')queueAdminDirectorySync();return send(res,200,{ok:true,status,societyId});
     }
     const adminCapacity=url.pathname.match(/^\/api\/admin\/capacity-requests\/([^/]+)$/);
     if(req.method==='PATCH'&&adminCapacity){if(!requireRole(user,['platform_admin'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}const status=['open','reviewing','resolved'].includes(body.status)?body.status:'';if(!status)return send(res,400,{error:'Choose a valid request status.'});const result=sql.prepare('UPDATE capacity_requests SET status=? WHERE id=?').run(status,adminCapacity[1]);if(!result.changes)return send(res,404,{error:'Capacity request not found.'});logAdmin(user,'capacity_request_updated','capacity_request',adminCapacity[1],status);return send(res,200,{ok:true})}
@@ -870,7 +911,7 @@ const server = http.createServer(async (req, res) => {
     }
     if(req.method==='POST'&&url.pathname==='/api/admin/societies'){
       if(!requireRole(user,['platform_admin'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
-      const name=String(body.name||'').trim(),city=String(body.city||'').trim();if(name.length<3||city.length<2)return send(res,400,{error:'Enter a society name and city.'});const row={id:'soc-'+crypto.randomBytes(6).toString('hex'),name,city};sql.prepare('INSERT INTO societies(id,name,city) VALUES(?,?,?)').run(row.id,row.name,row.city);logAdmin(user,'society_created','society',row.id,row.name);return send(res,201,{society:row});
+      const name=String(body.name||'').trim(),city=String(body.city||'').trim();if(name.length<3||city.length<2)return send(res,400,{error:'Enter a society name and city.'});const row={id:'soc-'+crypto.randomBytes(6).toString('hex'),name,city};sql.prepare('INSERT INTO societies(id,name,city) VALUES(?,?,?)').run(row.id,row.name,row.city);logAdmin(user,'society_created','society',row.id,row.name);queueAdminDirectorySync();return send(res,201,{society:row});
     }
     if(req.method==='GET'&&url.pathname==='/api/admin/societies'){
       if(!requireRole(user,['platform_admin'],res))return;return send(res,200,{societies:sql.prepare('SELECT id,name,city,is_active AS isActive,created_at AS createdAt FROM societies ORDER BY is_active DESC,name').all()});
@@ -885,6 +926,7 @@ const server = http.createServer(async (req, res) => {
       for(const [table,column] of references){if(sql.prepare('SELECT 1 FROM '+table+' WHERE '+column+'=? LIMIT 1').get(societyId))return send(res,409,{error:'This society still has linked accounts, bookings, cooks, or requests. It has been kept so those records remain intact.'})}
       sql.prepare('DELETE FROM societies WHERE id=?').run(societyId);
       logAdmin(user,'society_permanently_deleted','society',societyId,row.name);
+      queueAdminDirectorySync();
       return send(res,200,{ok:true});
     }
     const adminSocietyActive=url.pathname.match(/^\/api\/admin\/societies\/([^/]+)\/active$/);
@@ -896,6 +938,7 @@ const server = http.createServer(async (req, res) => {
       if(!result.changes)return send(res,404,{error:'Society not found.'});
       if(!body.active)sql.prepare("UPDATE sessions SET revoked_reason='society_removed' WHERE user_id IN (SELECT id FROM users WHERE society_id=?)").run(adminSocietyActive[1]);
       logAdmin(user,body.active?'society_restored':'society_removed','society',adminSocietyActive[1],body.active?'active':'removed from new registrations; user sessions revoked');
+      queueAdminDirectorySync();
       return send(res,200,{ok:true,active:body.active});
     }
     if (req.method === 'GET' && url.pathname === '/api/society/overview') {
@@ -911,7 +954,7 @@ const server = http.createServer(async (req, res) => {
       if(!requireRole(user,['cook'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}const name=String(body.name||'').trim(),address=String(body.address||'').trim(),phone=String(body.phone||'').trim(),years=Number(body.yearsExperience),bio=String(body.bio||'').trim();
       if(name.length<2||name.length>80||address.length<10||address.length>500||!/^[+\d][\d\s().-]{8,19}$/.test(phone)||!Number.isInteger(years)||years<0||years>60||bio.length>1500)return send(res,400,{error:'Check your name, address, phone, professional experience, and profile summary.'});
       const specialties=Array.isArray(body.specialties)?body.specialties.map(x=>String(x).trim().slice(0,50)).filter(Boolean).slice(0,10):[];let a,p;try{a=encryptSensitiveText(address);p=encryptSensitiveText(phone)}catch(e){return send(res,503,{error:e.message})}
-      const c=sql.prepare('SELECT id FROM cook_profiles WHERE user_id=?').get(user.id);if(!c)return send(res,404,{error:'Cook profile not found.'});sql.prepare('UPDATE cook_profiles SET name=?,years_experience=?,specialties=?,bio=?,address=?,phone=?,address_encrypted=?,address_nonce=?,address_tag=?,phone_encrypted=?,phone_nonce=?,phone_tag=? WHERE id=?').run(name,years,JSON.stringify(specialties),bio,'','',a.encrypted,a.nonce,a.authTag,p.encrypted,p.nonce,p.authTag,c.id);sql.prepare('UPDATE users SET name=? WHERE id=?').run(name,user.id);return send(res,200,{ok:true});
+      const c=sql.prepare('SELECT id FROM cook_profiles WHERE user_id=?').get(user.id);if(!c)return send(res,404,{error:'Cook profile not found.'});sql.prepare('UPDATE cook_profiles SET name=?,years_experience=?,specialties=?,bio=?,address=?,phone=?,address_encrypted=?,address_nonce=?,address_tag=?,phone_encrypted=?,phone_nonce=?,phone_tag=? WHERE id=?').run(name,years,JSON.stringify(specialties),bio,'','',a.encrypted,a.nonce,a.authTag,p.encrypted,p.nonce,p.authTag,c.id);sql.prepare('UPDATE users SET name=? WHERE id=?').run(name,user.id);queueAdminDirectorySync();return send(res,200,{ok:true});
     }
     if(req.method==='PUT'&&url.pathname==='/api/cook/profile/avatar'){
       if(!requireRole(user,['cook'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
