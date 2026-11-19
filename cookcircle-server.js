@@ -1007,7 +1007,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/profile') {
       if(!requireRole(user,['customer'],res))return;
-      return send(res,200,{profile:sql.prepare('SELECT household_name AS householdName,family_members AS familyMembers,cuisines,dietary_preferences AS dietaryPreferences,cooking_styles AS cookingStyles,instructions,allergies FROM households WHERE user_id=?').get(user.id)});
+      return send(res,200,{profile:sql.prepare('SELECT h.household_name AS householdName,h.family_members AS familyMembers,h.cuisines,h.dietary_preferences AS dietaryPreferences,h.cooking_styles AS cookingStyles,h.instructions,h.allergies,s.name AS societyName,s.city AS societyCity FROM households h JOIN societies s ON s.id=h.society_id WHERE h.user_id=?').get(user.id)});
     }
     if (req.method === 'PUT' && url.pathname === '/api/profile') {
       if(!requireRole(user,['customer'],res))return;let body;try{body=await getBody(req)}catch(e){return send(res,400,{error:e.message})}
