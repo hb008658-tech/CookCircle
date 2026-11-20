@@ -12,6 +12,7 @@ const { PostgresSyncDatabase } = USE_POSTGRES ? require('./cookcircle-postgres-s
 const PORT = Number(process.env.PORT || 3000);
 const WEB_ROOT = __dirname;
 const LANDING_IMAGE_FILES = Object.freeze({
+  "cookcircle-logo.webp": "cookcircle-logo.webp",
   "inline-01.jpg": "assets/cookcircle-inline-01.jpg",
   "inline-02.jpg": "An authentic Indian home meal on a real dining-kitchen table, with subtle signs of a lived-in home. No restaurant plating..jpg",
   "inline-03.webp": "A very appetizing plate-bowl of rajma chawal or another recognizably homemade Indian comfort.webp",
